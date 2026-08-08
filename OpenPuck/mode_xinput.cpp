@@ -18,11 +18,16 @@
 #include "usb_mount.h"
 #include "usb_tx.h"
 #include "usb_app_drivers.h"
+#include "identity.h"
+#include "src/xsm3/xsm3.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
 
 XboxController g_xboxCtl;
+
+// Set by controllerFor(): false for normal PC XInput, true for MODE_XBOX360_CONSOLE.
+bool g_xbox360ConsoleMode = false;
 
 // XInput button bits
 enum {
@@ -49,6 +54,11 @@ enum {
 // by endpoint address; xinputSend() targets a specific slot's IN endpoint.
 #define XINPUT_DESC_LEN \
 	(9 + 17 + 7 + 7) // interface(9)+vendor0x21(17)+IN ep(7)+OUT ep(7) = 40
+#define XSM3_DESC_LEN (9 + 6) // security interface(9) + Xbox security descriptor(6)
+
+// XSM3 is an endpoint-zero-only interface. It never consumes an RF/controller slot.
+static uint8_t g_xsm3Itf = 0xFF;
+static uint8_t g_xsm3Buf[0x22];
 
 // per-slot state. `inUse` is set in xi_open from the USB ISR and read in xinputSend from the loop -- mark
 // volatile so the loop doesn't observe a stale 0 across a freshly-attached interface.
@@ -85,6 +95,9 @@ static void xi_reset(uint8_t rhport)
 	(void)rhport;
 	g_xiOpenU =
 		0; // restart per-interface claim ordering for this enumeration
+	g_xsm3Itf = 0xFF;
+	memset(g_xsm3Buf, 0, sizeof g_xsm3Buf);
+	xsm3_initialise_state();
 	for (int s = 0; s < NSLOT; s++) {
 		g_xiSlot[s].itf = 0;
 		g_xiSlot[s].epIn = g_xiSlot[s].epOut = 0;
@@ -97,6 +110,21 @@ static void xi_reset(uint8_t rhport)
 static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 			uint16_t max_len)
 {
+	// Xbox Security Method 3: endpoint-zero-only interface. Claim it here so the same
+	// custom TinyUSB driver receives its control transfers, but do NOT consume an XiSlot.
+	if (itf->bInterfaceClass == 0xFF && itf->bInterfaceSubClass == 0xFD &&
+	    itf->bInterfaceProtocol == 0x13) {
+		if (!g_xbox360ConsoleMode || max_len < XSM3_DESC_LEN)
+			return 0;
+
+		uint8_t const *p = (uint8_t const *)itf + itf->bLength;
+		if (p[0] != 6 || p[1] != 0x41)
+			return 0;
+
+		g_xsm3Itf = itf->bInterfaceNumber;
+		return XSM3_DESC_LEN;
+	}
+
 	if (!(itf->bInterfaceClass == 0xFF && itf->bInterfaceSubClass == 0x5D &&
 	      itf->bInterfaceProtocol == 0x01))
 		return 0;
@@ -144,9 +172,85 @@ static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 static bool xi_ctrl(uint8_t rhport, uint8_t stage,
 		    tusb_control_request_t const *req)
 {
-	(void)rhport;
-	(void)req;
-	return stage != CONTROL_STAGE_SETUP;
+	// Normal PC XInput behavior stays untouched.
+	if (!g_xbox360ConsoleMode)
+		return stage != CONTROL_STAGE_SETUP;
+
+	// XSM3 uses vendor/interface control transfers addressed specifically to the FF/FD/13 interface.
+	if ((req->bmRequestType & 0x60) != 0x40 || // vendor request
+	    (req->bmRequestType & 0x1F) != 0x01 || // interface recipient
+	    (uint8_t)req->wIndex != g_xsm3Itf)
+		return stage != CONTROL_STAGE_SETUP;
+
+	const bool in = (req->bmRequestType & 0x80) != 0;
+
+	if (in) {
+		switch (req->bRequest) {
+		case 0x81:
+			if (stage == CONTROL_STAGE_SETUP) {
+				uint8_t serial[0x0C] = {0};
+				size_t n = strlen(g_unit);
+				if (n > sizeof serial)
+					n = sizeof serial;
+				memcpy(serial, g_unit, n);
+
+				xsm3_set_vid_pid(serial, 0x045E, 0x028E);
+				xsm3_initialise_state();
+				xsm3_set_identification_data(xsm3_id_data_ms_controller);
+				return tud_control_xfer(rhport, req,
+							xsm3_id_data_ms_controller,
+							sizeof xsm3_id_data_ms_controller);
+			}
+			return true;
+
+		case 0x83:
+			if (stage == CONTROL_STAGE_SETUP)
+				return tud_control_xfer(rhport, req, xsm3_challenge_response,
+							sizeof xsm3_challenge_response);
+			return true;
+
+		case 0x86:
+			if (stage == CONTROL_STAGE_SETUP) {
+				static uint8_t state[2] = {2, 0}; // 1=in progress, 2=complete
+				return tud_control_xfer(rhport, req, state, sizeof state);
+			}
+			return true;
+
+		default:
+			return false;
+		}
+	}
+
+	// Host-to-device challenge packets. The payload is valid only at CONTROL_STAGE_DATA.
+	switch (req->bRequest) {
+	case 0x82:
+		if (req->wLength > sizeof g_xsm3Buf)
+			return false;
+		if (stage == CONTROL_STAGE_SETUP)
+			return tud_control_xfer(rhport, req, g_xsm3Buf, req->wLength);
+		if (stage == CONTROL_STAGE_DATA)
+			xsm3_do_challenge_init(g_xsm3Buf);
+		return true;
+
+	case 0x87:
+		if (req->wLength > sizeof g_xsm3Buf)
+			return false;
+		if (stage == CONTROL_STAGE_SETUP)
+			return tud_control_xfer(rhport, req, g_xsm3Buf, req->wLength);
+		if (stage == CONTROL_STAGE_DATA)
+			xsm3_do_challenge_verify(g_xsm3Buf);
+		return true;
+
+	case 0x84:
+		if (req->wLength > sizeof g_xsm3Buf)
+			return false;
+		if (stage == CONTROL_STAGE_SETUP)
+			return tud_control_xfer(rhport, req, g_xsm3Buf, req->wLength);
+		return true;
+
+	default:
+		return false;
+	}
 }
 // Route an endpoint xfer callback to the slot that owns that endpoint.
 static bool xi_xfer(uint8_t rhport, uint8_t ep, xfer_result_t res, uint32_t n)
@@ -226,9 +330,37 @@ class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
 		return TinyUSBDevice.addInterface(*this);
 	}
 };
+
+class Adafruit_USBD_XInputSecurity : public Adafruit_USBD_Interface {
+    public:
+	uint16_t getInterfaceDescriptor(uint8_t, uint8_t *buf,
+					uint16_t bufsize) override
+	{
+		if (!buf)
+			return XSM3_DESC_LEN;
+		if (bufsize < XSM3_DESC_LEN)
+			return 0;
+
+		uint8_t itfnum = TinyUSBDevice.allocInterface(1);
+		const uint8_t t[XSM3_DESC_LEN] = {
+			9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x00,
+			0xFF, 0xFD, 0x13, _strid,
+			6, 0x41, 0x00, 0x01, 0x01, 0x03
+		};
+		memcpy(buf, t, sizeof t);
+		return sizeof t;
+	}
+
+	bool begin()
+	{
+		return TinyUSBDevice.addInterface(*this);
+	}
+};
+
 // NSLOT instances: each registers its own XInput interface (own itfnum + IN/OUT ep pair) during begin().
 // begin() in XboxController::begin() runs in order 0..NSLOT-1, so xi_open's first-free assignment lines up.
 static Adafruit_USBD_XInput g_xinput[NSLOT];
+static Adafruit_USBD_XInputSecurity g_xsm3Security;
 static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
 		       int16_t lx, int16_t ly, int16_t rx, int16_t ry)
 {
@@ -489,16 +621,26 @@ void XboxController::beginPool()
 	g_mouse.begin();
 	for (int s = 0; s < NSLOT; s++)
 		g_xinput[s].setStringDescriptor("Controller");
+	if (g_xbox360ConsoleMode)
+		g_xsm3Security.setStringDescriptor(
+			"Xbox Security Method 3, Version 1.00, (C) 2005 Microsoft Corporation. All rights reserved.");
 	// Drain the deferred XInput IN transfers from the usbd task every SOF (only registered in this mode).
 	usbTxRegisterDrain(xiSofDrain);
 }
 void XboxController::mountSlots(uint8_t k)
 {
-	// Right-pad mouse first (fixed HID), then one XInput interface per connected controller (claimed in
-	// order by xi_open). The wake mouse + WebUSB are added around this by usbReenumerate.
-	USBDevice.addInterface(g_mouse);
+	Serial.printf("mountSlots(): console=%d, slots=%u\n",
+		      g_xbox360ConsoleMode, k);
+
+	// PC XInput keeps the right-pad mouse. Console mode stays clean and adds XSM3 authentication.
+	if (!g_xbox360ConsoleMode)
+		USBDevice.addInterface(g_mouse);
+
 	for (uint8_t u = 0; u < k; u++)
 		USBDevice.addInterface(g_xinput[u]);
+
+	if (g_xbox360ConsoleMode)
+		USBDevice.addInterface(g_xsm3Security);
 }
 void XboxController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				uint8_t bodyTlen)
@@ -516,7 +658,7 @@ void XboxController::onReport45(int slot, const uint8_t *rep, bool fresh,
 	rfXboxGamepad((uint8_t)slot, rep);
 	// Shared desktop mouse: slot 0's right-pad only. Other slots' right-pad is still part of the
 	// per-slot XInput (TB_RPADT in the gamepad report is unused today but kept for forward-compat).
-	if (slot == 0)
+	if (!g_xbox360ConsoleMode && slot == 0)
 		rfXboxMouse(rep);
 }
 // Lost-stop watchdog per slot: Steam/Triton rumble is latched, so force a zero report if the host stops

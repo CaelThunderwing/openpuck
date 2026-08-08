@@ -1,3 +1,4 @@
+#include "xbox360_xid.h"
 #include "webusb_config.h"
 #include "board_config.h"
 #include "config.h"
@@ -34,6 +35,11 @@ __wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
 	if (g_usbMode == MODE_XBOX_OG &&
 	    xboxOgVendorControlXfer(rhport, stage, request))
 		return true;
+
+	if (g_usbMode == MODE_XBOX &&
+	    xbox360VendorControlXfer(rhport, stage, request))
+		return true;
+
 	return __real_tud_vendor_control_xfer_cb(rhport, stage, request);
 }
 

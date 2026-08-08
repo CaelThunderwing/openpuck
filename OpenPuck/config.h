@@ -43,7 +43,9 @@
 #define MODE_PS3 9
 // Microsoft Original Xbox Controller S (045E:0289)
 #define MODE_XBOX_OG 10
-#define MODE_MAX 10
+// Microsoft Xbox 360 console test personality (XInput without PC mouse composite)
+#define MODE_XBOX360_CONSOLE 11
+#define MODE_MAX 11
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are

@@ -68,7 +68,7 @@ static uint8_t g_usbCfgDesc[512];
 // Per-mode USB serial suffix (modes 1..MODE_MAX: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game
 // D=ds4game 3=ps3 O=original-xbox).
 static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S',
-				    'G', 'Q', 'D', '3', 'O' };
+				    'G', 'Q', 'D', '3', 'O', 'C' };
 // Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
 static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 
@@ -179,13 +179,17 @@ void setup()
 	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
 	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
+	// Xbox 360 console mode must likewise be a clean USB personality:
+	// no wake-mouse HID and no WebUSB vendor interface.
+	const bool xbox360ConsoleClean = (g_usbMode == MODE_XBOX360_CONSOLE);
+	const bool usbClean = psClean || xbox360ConsoleClean;
 	const bool dynamic = g_active->dynamicMount();
 
 	if (dynamic) {
 		// Dynamic mount: present only ACTIVELY-CONNECTED controllers; usbReenumerate re-attaches (no reboot)
 		// as the set changes. Emulated modes are never puck; clean-PS drops the wake mouse + WebUSB.
-		s_dynWantWakeMouse = !psClean;
-		s_dynWantWebusb = !psClean;
+		s_dynWantWakeMouse = !usbClean;
+		s_dynWantWebusb = !usbClean;
 		USBDevice.detach();
 		delay(30);
 		USBDevice.clearConfiguration();
@@ -274,7 +278,8 @@ void setup()
 		"SWITCH(pro+gyro)",	"PS5(dualsense)",
 		"HIDGYRO(ds4+motion)",	"PS5(dualsense,game/clean)",
 		"DS4(ds4,game/clean)",	"PS3(dualshock3/sixaxis)",
-		"XBOX-OG(controller s)"
+		"XBOX-OG(controller s)",
+		"XBOX360(console clean)"
 	};
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,
 		      g_board,

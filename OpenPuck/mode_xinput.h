@@ -25,4 +25,5 @@ class XboxController : public IController {
 	void beginPool() override;
 	void mountSlots(uint8_t k) override;
 };
+extern bool g_xbox360ConsoleMode;
 extern XboxController g_xboxCtl;

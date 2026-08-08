@@ -157,6 +157,7 @@
       <div class="modes" style="flex-wrap:wrap">
         <button data-mode="0" class="modebtn">Steam (puck)</button>
         <button data-mode="1" class="modebtn">Xbox 360</button>
+		<button data-mode="11" class="modebtn">Xbox 360 Console</button>
         <button data-mode="2" class="modebtn">Switch (HORIPAD)</button>
         <button data-mode="3" class="modebtn">Lizard (always)</button>
         <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
@@ -165,7 +166,7 @@
         <button data-mode="9" class="modebtn">PS3 (DualShock 3)</button>
         <button data-mode="10" class="modebtn">Original Xbox</button>
       </div>
-      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only. Original Xbox emulates one Microsoft Controller S and uses the Xbox mapping tab; LB/RB become White/Black. It's for a real Original Xbox console — a PC needs a driver for the original Xbox controller to see it as a gamepad.</p>
+      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only. Original Xbox emulates one Microsoft Controller S and uses the Xbox mapping tab; LB/RB become White/Black. It's for a real Original Xbox console — a PC needs a driver for the original Xbox controller to see it as a gamepad. Xbox 360 Console presents a console-targeted Xbox 360 XInput personality without the PC mouse composite interface.</p>
       <div class="row"><label>Persist last mode</label>
         <button id="persistMode">off</button>
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
@@ -389,7 +390,20 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)","Original Xbox"];
+const MODE_NAMES = [
+"Steam (puck)",
+"Xbox 360",
+"Switch (HORIPAD)",
+"Lizard (always)",
+"Switch Pro + gyro",
+"PS5 DualSense",
+"HID gyro (DS4)",
+"PS5 (game/clean)",
+"DS4 (game/clean)",
+"PS3 (DualShock 3)",
+"Original Xbox",
+"Xbox 360 Console"
+];
 const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
