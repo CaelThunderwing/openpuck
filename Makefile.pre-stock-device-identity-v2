@@ -30,7 +30,6 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
 FQBN ?= adafruit:nrf52:feather52840
 CFG_TUD_HID ?= 6
-CFG_TUD_ENDPOINT0_SIZE ?= 8
 # Optional output paths; when set, --clean is implied and build artifacts land in OUTPUT_DIR.
 # Used by CI: make build BUILD_PATH=build/cache/openpuck OUTPUT_DIR=build/openpuck
 BUILD_PATH ?=
@@ -46,9 +45,9 @@ EXTRA_FLAGS ?=
 # already defines to serve WebUSB. Original Xbox mode needs the XID requests that arrive on it.
 # Overriding the weak symbol would claim the whole hook and force a copy of Adafruit's WebUSB body,
 # so we wrap: webusb_config.cpp takes XID and passes everything else to __real_.
-OPENPUCK_LINK_FLAGS ?= -Wl,--wrap=tud_vendor_control_xfer_cb,--wrap=tud_descriptor_string_cb,--wrap=tud_descriptor_device_cb
+OPENPUCK_LINK_FLAGS ?= -Wl,--wrap=tud_vendor_control_xfer_cb,--wrap=tud_descriptor_string_cb
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
-USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_ENDPOINT0_SIZE=$(CFG_TUD_ENDPOINT0_SIZE) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
+USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 # When BUILD_PATH is set, --clean + path flags are injected; omitted for fast incremental dev builds.
 _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir $(OUTPUT_DIR))
 

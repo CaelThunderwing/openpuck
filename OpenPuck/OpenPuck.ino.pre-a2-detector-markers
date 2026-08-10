@@ -119,13 +119,8 @@ void modeSwitchReboot(uint8_t mode)
 	NVIC_SystemReset();
 }
 
-static bool g_x360RecoveryResetBoot = false;
-
 void setup()
 {
-        // Consume the Xbox-recovery reset marker before normal diagnostics/
-        // loop-stage breadcrumbs can overwrite GPREGRET2.
-        g_x360RecoveryResetBoot = faultDiagConsumeXbox360RecoveryReset();
 	// full-board wipe (debug-only "erase everything"): if the panel armed one, this never returns -- it erases
 	// the app + config/bond + bootloader-settings flash from RAM and resets into the app-less UF2 bootloader.
 	// Checked before the staged-update apply (both use the meta page; only one can be armed at a time).
@@ -185,17 +180,13 @@ void setup()
 	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
 	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
-	// MODE_XBOX360_CONSOLE must present only the Xbox controller/security
-	// interfaces. The stock 360 rejects the generic wake-mouse/WebUSB
-	// interfaces that ordinary desktop XInput modes can tolerate.
-	const bool xbox360Clean = (g_usbMode == MODE_XBOX360_CONSOLE);
 	const bool dynamic = g_active->dynamicMount();
 
 	if (dynamic) {
 		// Dynamic mount: present only ACTIVELY-CONNECTED controllers; usbReenumerate re-attaches (no reboot)
 		// as the set changes. Emulated modes are never puck; clean-PS drops the wake mouse + WebUSB.
-		s_dynWantWakeMouse = !psClean && !xbox360Clean;
-		s_dynWantWebusb = !psClean && !xbox360Clean;
+		s_dynWantWakeMouse = !psClean;
+		s_dynWantWebusb = !psClean;
 		USBDevice.detach();
 		delay(30);
 		USBDevice.clearConfiguration();
@@ -250,12 +241,12 @@ void setup()
 		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
 		// modes so the device stays a single clean HID gamepad (see psClean above).
-		if (!puckMode && !keepCdc && !psClean && !xbox360Clean)
+		if (!puckMode && !keepCdc && !psClean)
 			wakeHidBegin();
 
 		// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
 		// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
-		if (!puckMode && !psClean && !xbox360Clean)
+		if (!puckMode && !psClean)
 			usb_web.begin();
 		// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
 		// The PS3/Sixaxis (the only clean-PS mode on this static path) advertises 0x80 only -- match it so a
@@ -351,8 +342,8 @@ void setup()
 //   A5 = recovery scheduled and consumed by loop()
 //   A6 = synthetic detach
 //   A7 = synthetic attach
-//   A8 = legacy diagnostic: A2 arrived while uptime < 10 s (guard now removed)
-//   A9 = first A2 accepted for pair detection
+//   A8 = A2 seen, but Puck uptime was still < 10 s
+//   A9 = first eligible late A2 accepted
 //   AA = second eligible A2 matched within the 250 ms window
 //   AB = eligible A2 seen, but prior eligible A2 was outside the window
 static volatile bool g_x360RecoveryScheduled = false;
@@ -362,24 +353,14 @@ static uint32_t g_x360RecoveryDeadlineMs = 0;
 static volatile uint32_t g_x360LastUmountMs = 0;
 static volatile uint8_t g_x360LateUmountCount = 0;
 
-#ifndef X360_AUTORECOVERY_ENABLE
-#define X360_AUTORECOVERY_ENABLE 0
-#endif
-
+#define X360_RECOVERY_MIN_UPTIME_MS     10000u
 #define X360_RECOVERY_A2_WINDOW_MS        250u
 #define X360_RECOVERY_AFTER_A2_MS        1000u
 #define X360_RECOVERY_DETACH_MS           300u
 
 static void xbox360ColdBootRecoveryTask(void)
 {
-        if (g_usbMode != MODE_XBOX360_CONSOLE)
-                return;
-
-        // g_x360RecoveryDone prevents a SECOND recovery cycle, but state 2
-        // still has to run so the USB device can re-attach after the synthetic
-        // detach. The previous guard returned here immediately after A6 and
-        // stranded the Puck detached forever.
-        if (g_x360RecoveryDone && g_x360RecoveryState == 0)
+        if (g_usbMode != MODE_XBOX360_CONSOLE || g_x360RecoveryDone)
                 return;
 
         uint32_t now = millis();
@@ -409,14 +390,10 @@ static void xbox360ColdBootRecoveryTask(void)
 
         if (g_x360RecoveryState == 2 &&
             (int32_t)(now - g_x360RecoveryDeadlineMs) >= 0) {
-                // Soft attach did not reproduce a physical USB-C reconnect.
-                // Stay detached and reboot the MCU so USB returns through the
-                // complete normal initialization path.
-                faultDiagUsbBootTrace(0xA7); // recovery reset issued
+                USBDevice.attach();
+                faultDiagUsbBootTrace(0xA7);
                 faultDiagTrace(FR_SAVE, 0xA7);
-                faultDiagArmXbox360RecoveryReset();
-                NVIC_SystemReset();
-                while (1) {}
+                g_x360RecoveryState = 0;
         }
 }
 
@@ -435,47 +412,21 @@ extern "C" void tud_umount_cb(void)
                 faultDiagTrace(FR_SAVE, 0xA2);
 
                 // Cold-boot signature seen on the 360: two A2 callbacks roughly
-                // 30 ms apart. The previous uptime guard was disproven by the
-                // A8 diagnostics, so the pair itself is the recovery trigger.
-                // Only arm here; loop() performs the detach/attach.
-                //
-                // Diagnostic markers below record the ACTUAL branch decisions
-                // made here, so we no longer have to infer detector behavior
-                // from the later reconstructed st255 A2 records.
+                // 30 ms apart while the Puck has already been powered for a
+                // long time. Only arm; loop() performs the detach/attach.
                 uint32_t now = millis();
-
-                if (g_x360RecoveryDone || g_x360RecoveryResetBoot)
-                        return;
-
-                // The detector markers proved the Xbox cold-boot A2 pair is
-                // arriving while millis() is still below 10 s, even when the
-                // Puck was deliberately left connected beforehand. Do not gate
-                // recovery on MCU uptime; the repeatable double-A2 signature
-                // itself is now the guard.
-                uint32_t dt = now - g_x360LastUmountMs;
-
-                if (!g_x360LateUmountCount) {
-                        g_x360LateUmountCount = 1;
+                if (!g_x360RecoveryDone &&
+                    now >= X360_RECOVERY_MIN_UPTIME_MS) {
+                        uint32_t dt = now - g_x360LastUmountMs;
+                        if (g_x360LateUmountCount &&
+                            dt <= X360_RECOVERY_A2_WINDOW_MS) {
+                                g_x360RecoveryScheduled = true;
+                                g_x360LateUmountCount = 0;
+                        } else {
+                                g_x360LateUmountCount = 1;
+                        }
                         g_x360LastUmountMs = now;
-                        faultDiagUsbBootTrace(0xA9);
-                        return;
                 }
-
-                if (dt <= X360_RECOVERY_A2_WINDOW_MS) {
-                        faultDiagUsbBootTrace(0xAA);
-#if X360_AUTORECOVERY_ENABLE
-                        g_x360RecoveryScheduled = true;
-#endif
-                        g_x360LateUmountCount = 0;
-                        g_x360LastUmountMs = now;
-                        return;
-                }
-
-                // We had a previous eligible A2, but it was too old to form
-                // the cold-boot pair. Treat this A2 as the first of a new pair.
-                faultDiagUsbBootTrace(0xAB);
-                g_x360LateUmountCount = 1;
-                g_x360LastUmountMs = now;
         }
 }
 

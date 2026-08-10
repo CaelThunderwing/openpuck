@@ -37,12 +37,6 @@ void faultDiagBoot();
 // the next boot classifies it as RR_REBOOT, not RR_HARDFAULT.
 void faultDiagArmIntentionalReset();
 
-// One-shot Xbox cold-boot recovery marker. Distinct from the generic
-// intentional-reset marker so setup() can suppress exactly one recovery cycle.
-void faultDiagArmXbox360RecoveryReset();
-bool faultDiagConsumeXbox360RecoveryReset();
-
-
 // ---- hang-stage breadcrumb -------------------------------------------------------------------------------
 // loop() writes the stage it is ENTERING to GPREGRET2 (encoded 0x80|stage, distinct from the intentional/fault
 // markers and from 0 during normal SREQ). If loop() wedges, the ~8s watchdog fires; GPREGRET2 survives that

@@ -378,12 +378,6 @@ static bool xi_ctrl(uint8_t rhport, uint8_t stage,
 		return false;
 	}
 }
-bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
-                                   tusb_control_request_t const *req)
-{
-        return xi_ctrl(rhport, stage, req);
-}
-
 // Route an endpoint xfer callback to the slot that owns that endpoint.
 static bool xi_xfer(uint8_t rhport, uint8_t ep, xfer_result_t res, uint32_t n)
 {
@@ -460,14 +454,15 @@ class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
 			// Xbox 360 XInput gamepad descriptor.
 			// Match Santroller's known-working descriptor byte-for-byte for subtype 0x01.
 			0x11, 0x21, 0x10, 0x01, 0x01, 0x25, epin, 0x14,
-			0x03, 0x03, 0x03, 0x04, 0x13, (g_xbox360ConsoleMode ? 0x02 : epout), 0x08, 0x03, 0x03,
+			0x03, 0x03, 0x03, 0x04, 0x13, epout, 0x08, 0x03, 0x03,
 
 			// Endpoint IN: 32-byte interrupt, 1 ms interval.
 			7, TUSB_DESC_ENDPOINT, epin, TUSB_XFER_INTERRUPT,
-			U16_TO_U8S_LE(0x20), (g_xbox360ConsoleMode ? 4 : 1),
+			U16_TO_U8S_LE(0x20), 1,
 
 			// Endpoint OUT: match Santroller's 1 ms interval.
-			7, TUSB_DESC_ENDPOINT, (g_xbox360ConsoleMode ? 0x02 : epout), TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(0x20), (g_xbox360ConsoleMode ? 8 : 1)
+			7, TUSB_DESC_ENDPOINT, epout, TUSB_XFER_INTERRUPT,
+			U16_TO_U8S_LE(0x20), 1
 		};
 		memcpy(buf, t, XINPUT_DESC_LEN);
 		return XINPUT_DESC_LEN;
@@ -499,18 +494,18 @@ class Adafruit_USBD_XInputAux1 : public Adafruit_USBD_Interface {
                     9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x04,
                     0xFF, 0x5D, 0x03, 0x00,
 
-                    0x1B, 0x21, 0x10, 0x01, 0x01, 0x01,
-                    0x83, 0x40, 0x01, 0x04, 0x20, 0x16,
-                    0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16,
-                    0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x1B, 0x21, 0x00, 0x01, 0x01, 0x01,
+                    epin1, 0x40, 0x01, epout1, 0x20, 0x16,
+                    epin2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16,
+                    epout2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 
-                    7, TUSB_DESC_ENDPOINT, 0x83, TUSB_XFER_INTERRUPT,
+                    7, TUSB_DESC_ENDPOINT, epin1, TUSB_XFER_INTERRUPT,
                     U16_TO_U8S_LE(0x20), 2,
-                    7, TUSB_DESC_ENDPOINT, 0x04, TUSB_XFER_INTERRUPT,
+                    7, TUSB_DESC_ENDPOINT, epout1, TUSB_XFER_INTERRUPT,
                     U16_TO_U8S_LE(0x20), 4,
-                    7, TUSB_DESC_ENDPOINT, 0x85, TUSB_XFER_INTERRUPT,
+                    7, TUSB_DESC_ENDPOINT, epin2, TUSB_XFER_INTERRUPT,
                     U16_TO_U8S_LE(0x20), 64,
-                    7, TUSB_DESC_ENDPOINT, 0x05, TUSB_XFER_INTERRUPT,
+                    7, TUSB_DESC_ENDPOINT, epout2, TUSB_XFER_INTERRUPT,
                     U16_TO_U8S_LE(0x20), 16
             };
             memcpy(buf, t, sizeof t);
@@ -537,9 +532,9 @@ class Adafruit_USBD_XInputAux2 : public Adafruit_USBD_Interface {
                     9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x01,
                     0xFF, 0x5D, 0x02, 0x00,
 
-                    0x09, 0x21, 0x10, 0x01, 0x01, 0x22, 0x86, 0x07, 0x00,
+                    0x09, 0x21, 0x00, 0x01, 0x01, 0x22, epin, 0x07, 0x00,
 
-                    7, TUSB_DESC_ENDPOINT, 0x86, TUSB_XFER_INTERRUPT,
+                    7, TUSB_DESC_ENDPOINT, epin, TUSB_XFER_INTERRUPT,
                     U16_TO_U8S_LE(0x20), 16
             };
             memcpy(buf, t, sizeof t);

@@ -362,10 +362,6 @@ static uint32_t g_x360RecoveryDeadlineMs = 0;
 static volatile uint32_t g_x360LastUmountMs = 0;
 static volatile uint8_t g_x360LateUmountCount = 0;
 
-#ifndef X360_AUTORECOVERY_ENABLE
-#define X360_AUTORECOVERY_ENABLE 0
-#endif
-
 #define X360_RECOVERY_A2_WINDOW_MS        250u
 #define X360_RECOVERY_AFTER_A2_MS        1000u
 #define X360_RECOVERY_DETACH_MS           300u
@@ -463,9 +459,7 @@ extern "C" void tud_umount_cb(void)
 
                 if (dt <= X360_RECOVERY_A2_WINDOW_MS) {
                         faultDiagUsbBootTrace(0xAA);
-#if X360_AUTORECOVERY_ENABLE
                         g_x360RecoveryScheduled = true;
-#endif
                         g_x360LateUmountCount = 0;
                         g_x360LastUmountMs = now;
                         return;

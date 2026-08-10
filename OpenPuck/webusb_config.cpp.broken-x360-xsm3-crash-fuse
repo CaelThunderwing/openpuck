@@ -21,31 +21,28 @@ Adafruit_USBD_WebUSB usb_web;
 // MODE_XBOX360_CONSOLE XSM3 vendor/interface bridge.
 bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
                                    tusb_control_request_t const *request);
-// Staged XSM3 gate for isolating the Xbox-only crash.
-// Change X360_XSM3_MAX_REQUEST between builds:
-//   0x81 = identification only
-//   0x82 = allow identification + challenge-init
-//   0x86 = also allow state query
-//   0x83 = allow through challenge-response
-//
-// Note: request order is not numeric, so the allow-list below is explicit.
-#ifndef X360_XSM3_MAX_REQUEST
-#define X360_XSM3_MAX_REQUEST 0x82
-#endif
 
-static inline bool x360Xsm3RequestAllowed(uint8_t req)
+// One-crash fuse for the experimental stock-Xbox XSM3 forwarding path.
+// GPREGRET2 survives an MCU soft reset. If forwarding wedges and the WDT
+// resets us, the next boot will NOT immediately re-enter the same path while
+// the Xbox is still attached. A physical power removal clears the retained
+// register on the board.
+#define X360_XSM3_CRASH_FUSE 0xB4u
+
+static inline bool x360Xsm3CrashFuseArmed()
 {
-#if X360_XSM3_MAX_REQUEST == 0x81
-        return req == 0x81;
-#elif X360_XSM3_MAX_REQUEST == 0x82
-        return req == 0x81 || req == 0x82;
-#elif X360_XSM3_MAX_REQUEST == 0x86
-        return req == 0x81 || req == 0x82 || req == 0x86;
-#elif X360_XSM3_MAX_REQUEST == 0x83
-        return req == 0x81 || req == 0x82 || req == 0x86 || req == 0x83;
-#else
-#error Unsupported X360_XSM3_MAX_REQUEST value
-#endif
+        return (uint8_t)NRF_POWER->GPREGRET2 == X360_XSM3_CRASH_FUSE;
+}
+
+static inline void x360Xsm3CrashFuseArm()
+{
+        NRF_POWER->GPREGRET2 = X360_XSM3_CRASH_FUSE;
+}
+
+static inline void x360Xsm3CrashFuseClear()
+{
+        if ((uint8_t)NRF_POWER->GPREGRET2 == X360_XSM3_CRASH_FUSE)
+                NRF_POWER->GPREGRET2 = 0;
 }
 
 
@@ -71,10 +68,20 @@ __wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
             (uint8_t)request->wIndex == 3 &&
             request->bRequest >= 0x81 &&
             request->bRequest <= 0x87) {
-                if (!x360Xsm3RequestAllowed(request->bRequest))
+                // If the previous attempt died in this call, remain stable
+                // after the watchdog reset instead of crash-looping.
+                if (x360Xsm3CrashFuseArmed())
                         return false;
-                return xbox360ConsoleXsm3ControlXfer(rhport, stage, request);
-        }
+
+                // Arm immediately before entering the suspect path.
+                x360Xsm3CrashFuseArm();
+                bool const ok =
+                        xbox360ConsoleXsm3ControlXfer(rhport, stage, request);
+
+                // A normal return proves this invocation itself did not wedge.
+                x360Xsm3CrashFuseClear();
+                return ok;
+        
 
 	if (g_usbMode == MODE_XBOX_OG &&
 	    xboxOgVendorControlXfer(rhport, stage, request))

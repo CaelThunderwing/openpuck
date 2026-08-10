@@ -185,17 +185,13 @@ void setup()
 	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
 	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
-	// MODE_XBOX360_CONSOLE must present only the Xbox controller/security
-	// interfaces. The stock 360 rejects the generic wake-mouse/WebUSB
-	// interfaces that ordinary desktop XInput modes can tolerate.
-	const bool xbox360Clean = (g_usbMode == MODE_XBOX360_CONSOLE);
 	const bool dynamic = g_active->dynamicMount();
 
 	if (dynamic) {
 		// Dynamic mount: present only ACTIVELY-CONNECTED controllers; usbReenumerate re-attaches (no reboot)
 		// as the set changes. Emulated modes are never puck; clean-PS drops the wake mouse + WebUSB.
-		s_dynWantWakeMouse = !psClean && !xbox360Clean;
-		s_dynWantWebusb = !psClean && !xbox360Clean;
+		s_dynWantWakeMouse = !psClean;
+		s_dynWantWebusb = !psClean;
 		USBDevice.detach();
 		delay(30);
 		USBDevice.clearConfiguration();
@@ -250,12 +246,12 @@ void setup()
 		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
 		// modes so the device stays a single clean HID gamepad (see psClean above).
-		if (!puckMode && !keepCdc && !psClean && !xbox360Clean)
+		if (!puckMode && !keepCdc && !psClean)
 			wakeHidBegin();
 
 		// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
 		// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
-		if (!puckMode && !psClean && !xbox360Clean)
+		if (!puckMode && !psClean)
 			usb_web.begin();
 		// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
 		// The PS3/Sixaxis (the only clean-PS mode on this static path) advertises 0x80 only -- match it so a
@@ -362,10 +358,6 @@ static uint32_t g_x360RecoveryDeadlineMs = 0;
 static volatile uint32_t g_x360LastUmountMs = 0;
 static volatile uint8_t g_x360LateUmountCount = 0;
 
-#ifndef X360_AUTORECOVERY_ENABLE
-#define X360_AUTORECOVERY_ENABLE 0
-#endif
-
 #define X360_RECOVERY_A2_WINDOW_MS        250u
 #define X360_RECOVERY_AFTER_A2_MS        1000u
 #define X360_RECOVERY_DETACH_MS           300u
@@ -463,9 +455,7 @@ extern "C" void tud_umount_cb(void)
 
                 if (dt <= X360_RECOVERY_A2_WINDOW_MS) {
                         faultDiagUsbBootTrace(0xAA);
-#if X360_AUTORECOVERY_ENABLE
                         g_x360RecoveryScheduled = true;
-#endif
                         g_x360LateUmountCount = 0;
                         g_x360LastUmountMs = now;
                         return;

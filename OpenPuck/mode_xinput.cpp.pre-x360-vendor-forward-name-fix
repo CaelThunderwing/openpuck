@@ -275,6 +275,44 @@ static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 // Logged only at SETUP so each control transaction produces one entry:
 // B1=0x81 identification, B2=0x82 challenge-init, B3=0x83 response,
 // B4=0x84 ack, B6=0x86 state, B7=0x87 verify.
+
+extern "C" void openpuck_ep0_setup_trace(tusb_control_request_t const *req)
+{
+        if (!g_xbox360ConsoleMode || !req)
+                return;
+
+        // D0, TTBB=bmRequestType/bRequest; D1=wValue; D2=wIndex; D3=wLength
+        faultDiagUsbBootTrace(0x00D0);
+        faultDiagUsbBootTrace(((uint16_t)req->bmRequestType << 8) | req->bRequest);
+        faultDiagUsbBootTrace(0x00D1);
+        faultDiagUsbBootTrace(req->wValue);
+        faultDiagUsbBootTrace(0x00D2);
+        faultDiagUsbBootTrace(req->wIndex);
+        faultDiagUsbBootTrace(0x00D3);
+        faultDiagUsbBootTrace(req->wLength);
+}
+
+static inline void xiTraceRawSetup(uint8_t stage,
+                                   tusb_control_request_t const *req)
+{
+        if (!g_xbox360ConsoleMode || stage != CONTROL_STAGE_SETUP || !req)
+                return;
+
+        // Existing persistent trace has one 16-bit arg, so store marker/value pairs:
+        // C0, TTBB = bmRequestType/bRequest
+        // C1, VVVV = wValue
+        // C2, IIII = wIndex
+        // C3, LLLL = wLength
+        faultDiagUsbBootTrace(0x00C0);
+        faultDiagUsbBootTrace(((uint16_t)req->bmRequestType << 8) | req->bRequest);
+        faultDiagUsbBootTrace(0x00C1);
+        faultDiagUsbBootTrace(req->wValue);
+        faultDiagUsbBootTrace(0x00C2);
+        faultDiagUsbBootTrace(req->wIndex);
+        faultDiagUsbBootTrace(0x00C3);
+        faultDiagUsbBootTrace(req->wLength);
+}
+
 static inline void xiTraceXsm3Setup(uint8_t stage, uint8_t request)
 {
         if (stage != CONTROL_STAGE_SETUP)
@@ -296,6 +334,8 @@ static inline void xiTraceXsm3Setup(uint8_t stage, uint8_t request)
 static bool xi_ctrl(uint8_t rhport, uint8_t stage,
 		    tusb_control_request_t const *req)
 {
+        xiTraceRawSetup(stage, req);
+
 	// Normal PC XInput behavior stays untouched.
 	if (!g_xbox360ConsoleMode)
 		return stage != CONTROL_STAGE_SETUP;
@@ -378,8 +418,9 @@ static bool xi_ctrl(uint8_t rhport, uint8_t stage,
 		return false;
 	}
 }
-bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
-                                   tusb_control_request_t const *req)
+
+bool xbox360VendorControlXfer(uint8_t rhport, uint8_t stage,
+                              tusb_control_request_t const *req)
 {
         return xi_ctrl(rhport, stage, req);
 }

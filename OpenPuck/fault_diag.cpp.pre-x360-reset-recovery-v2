@@ -14,7 +14,6 @@ using namespace Adafruit_LittleFS_Namespace;
 // free for the application and is retained across soft/watchdog/pin reset, cleared only on power-on/brownout.
 // Arbitrary non-zero tags -- any value distinct from each other and from the power-on default (0) works.
 #define G2_INTENT 0xB1u
-#define G2_X360_RECOVERY 0xB2u
 #define G2_FAULT 0xFAu
 
 static uint8_t g_reason = RR_UNKNOWN;
@@ -104,20 +103,6 @@ void faultDiagArmIntentionalReset()
 {
 	NRF_POWER->GPREGRET2 = G2_INTENT;
 }
-
-void faultDiagArmXbox360RecoveryReset()
-{
-    NRF_POWER->GPREGRET2 = G2_X360_RECOVERY;
-}
-
-bool faultDiagConsumeXbox360RecoveryReset()
-{
-    if ((uint8_t)NRF_POWER->GPREGRET2 != G2_X360_RECOVERY)
-        return false;
-    NRF_POWER->GPREGRET2 = 0;
-    return true;
-}
-
 
 // Live stage + loop heartbeat. The post-reset GPREGRET2 breadcrumb only works if the bootloader preserves
 // GPREGRET2 across a watchdog reset -- some clone boards clear it, so it reads blank. These LIVE values don't

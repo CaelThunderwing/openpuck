@@ -30,61 +30,6 @@ XboxController g_xboxCtl;
 // Set by controllerFor(): false for normal PC XInput, true for MODE_XBOX360_CONSOLE.
 bool g_xbox360ConsoleMode = false;
 
-// Stock Xbox 360 device-level identity for MODE_XBOX360_CONSOLE only.
-static tusb_desc_device_t const g_x360DeviceDesc __attribute__((aligned(4))) = {
-    .bLength            = sizeof(tusb_desc_device_t),
-    .bDescriptorType    = TUSB_DESC_DEVICE,
-    .bcdUSB             = 0x0200,
-    .bDeviceClass       = 0xFF,
-    .bDeviceSubClass    = 0xFF,
-    .bDeviceProtocol    = 0xFF,
-    .bMaxPacketSize0    = 8,
-    .idVendor           = 0x045E,
-    .idProduct          = 0x028E,
-    .bcdDevice          = 0x0110,
-    .iManufacturer      = 1,
-    .iProduct           = 2,
-    .iSerialNumber      = 3,
-    .bNumConfigurations = 1
-};
-
-extern "C" uint8_t const *__real_tud_descriptor_device_cb(void);
-extern "C" uint8_t const *__wrap_tud_descriptor_device_cb(void)
-{
-    if (g_xbox360ConsoleMode)
-        return reinterpret_cast<uint8_t const *>(&g_x360DeviceDesc);
-    return __real_tud_descriptor_device_cb();
-}
-
-
-// Full OEM XSM3 interface string descriptor (178 bytes).
-// Mode 11 bypasses the short generic TinyUSB string scratch buffer for index 4.
-static const uint16_t g_xsm3FullStringDesc[] __attribute__((aligned(4))) = {
-    0x03B2, 0x0058, 0x0062, 0x006F, 0x0078, 0x0020, 0x0053, 0x0065,
-    0x0063, 0x0075, 0x0072, 0x0069, 0x0074, 0x0079, 0x0020, 0x004D,
-    0x0065, 0x0074, 0x0068, 0x006F, 0x0064, 0x0020, 0x0033, 0x002C,
-    0x0020, 0x0056, 0x0065, 0x0072, 0x0073, 0x0069, 0x006F, 0x006E,
-    0x0020, 0x0031, 0x002E, 0x0030, 0x0030, 0x002C, 0x0020, 0x00A9,
-    0x0020, 0x0032, 0x0030, 0x0030, 0x0035, 0x0020, 0x004D, 0x0069,
-    0x0063, 0x0072, 0x006F, 0x0073, 0x006F, 0x0066, 0x0074, 0x0020,
-    0x0043, 0x006F, 0x0072, 0x0070, 0x006F, 0x0072, 0x0061, 0x0074,
-    0x0069, 0x006F, 0x006E, 0x002E, 0x0020, 0x0041, 0x006C, 0x006C,
-    0x0020, 0x0072, 0x0069, 0x0067, 0x0068, 0x0074, 0x0073, 0x0020,
-    0x0072, 0x0065, 0x0073, 0x0065, 0x0072, 0x0076, 0x0065, 0x0064,
-    0x002E,
-};
-
-extern "C" uint16_t const *
-__real_tud_descriptor_string_cb(uint8_t index, uint16_t langid);
-
-extern "C" uint16_t const *
-__wrap_tud_descriptor_string_cb(uint8_t index, uint16_t langid)
-{
-    if (g_xbox360ConsoleMode && index == 4)
-        return g_xsm3FullStringDesc;
-    return __real_tud_descriptor_string_cb(index, langid);
-}
-
 // XInput button bits
 enum {
 	XB_DUP = 0x0001,
@@ -110,21 +55,12 @@ enum {
 // by endpoint address; xinputSend() targets a specific slot's IN endpoint.
 #define XINPUT_DESC_LEN \
 	(9 + 17 + 7 + 7) // interface(9)+vendor0x21(17)+IN ep(7)+OUT ep(7) = 40
-#define XINPUT_AUX1_DESC_LEN (9 + 27 + 7 + 7 + 7 + 7)
-#define XINPUT_AUX2_DESC_LEN (9 + 9 + 7)
 #define XSM3_DESC_LEN (9 + 6) // security interface(9) + Xbox security descriptor(6)
 
 // XSM3 is an endpoint-zero-only interface. It never consumes an RF/controller slot.
 static uint8_t g_xsm3Itf = 0xFF;
 static uint8_t g_xsm3Buf[0x22];
 
-
-struct XiAuxOut {
-    uint8_t ep;
-    uint8_t buf[32];
-};
-static XiAuxOut g_xiAuxOut[2];
-static uint8_t g_xiAuxOutCount = 0;
 // per-slot state. `inUse` is set in xi_open from the USB ISR and read in xinputSend from the loop -- mark
 // volatile so the loop doesn't observe a stale 0 across a freshly-attached interface.
 struct XiSlot {
@@ -162,8 +98,6 @@ static void xi_reset(uint8_t rhport)
 		0; // restart per-interface claim ordering for this enumeration
 	g_xsm3Itf = 0xFF;
 	memset(g_xsm3Buf, 0, sizeof g_xsm3Buf);
-    g_xiAuxOutCount = 0;
-    memset(g_xiAuxOut, 0, sizeof g_xiAuxOut);
 	xsm3_initialise_state();
 	for (int s = 0; s < NSLOT; s++) {
 		g_xiSlot[s].itf = 0;
@@ -191,41 +125,6 @@ static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 		g_xsm3Itf = itf->bInterfaceNumber;
 		return XSM3_DESC_LEN;
 	}
-    // Licensed Xbox 360 auxiliary interfaces. Claim their endpoints so the
-    // stock console sees a complete four-interface wired-controller function.
-    if (g_xbox360ConsoleMode && itf->bInterfaceClass == 0xFF &&
-        itf->bInterfaceSubClass == 0x5D &&
-        (itf->bInterfaceProtocol == 0x03 || itf->bInterfaceProtocol == 0x02)) {
-            uint8_t const *p = (uint8_t const *)itf + itf->bLength;
-            uint8_t const *end = (uint8_t const *)itf + max_len;
-            uint16_t used = itf->bLength;
-            uint8_t opened = 0;
-
-            while (p + 2 <= end && opened < itf->bNumEndpoints) {
-                    uint8_t blen = p[0], btype = p[1];
-                    if (blen < 2 || p + blen > end)
-                            return 0;
-
-                    if (btype == TUSB_DESC_ENDPOINT) {
-                            tusb_desc_endpoint_t const *ep =
-                                    (tusb_desc_endpoint_t const *)p;
-                            if (!usbd_edpt_open(rhport, ep))
-                                    return 0;
-
-                            if (tu_edpt_dir(ep->bEndpointAddress) == TUSB_DIR_OUT &&
-                                g_xiAuxOutCount < 2) {
-                                    XiAuxOut &A = g_xiAuxOut[g_xiAuxOutCount++];
-                                    A.ep = ep->bEndpointAddress;
-                                    usbd_edpt_xfer(rhport, A.ep, A.buf, sizeof A.buf);
-                            }
-                            opened++;
-                    }
-                    used += blen;
-                    p += blen;
-            }
-            return opened == itf->bNumEndpoints ? used : 0;
-    }
-
 
 	if (!(itf->bInterfaceClass == 0xFF && itf->bInterfaceSubClass == 0x5D &&
 	      itf->bInterfaceProtocol == 0x01))
@@ -378,25 +277,10 @@ static bool xi_ctrl(uint8_t rhport, uint8_t stage,
 		return false;
 	}
 }
-bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
-                                   tusb_control_request_t const *req)
-{
-        return xi_ctrl(rhport, stage, req);
-}
-
 // Route an endpoint xfer callback to the slot that owns that endpoint.
 static bool xi_xfer(uint8_t rhport, uint8_t ep, xfer_result_t res, uint32_t n)
 {
 	(void)res;
-
-    for (uint8_t i = 0; i < g_xiAuxOutCount; i++) {
-            if (ep == g_xiAuxOut[i].ep) {
-                    (void)n;
-                    usbd_edpt_xfer(rhport, ep, g_xiAuxOut[i].buf,
-                                   sizeof g_xiAuxOut[i].buf);
-                    return true;
-            }
-    }
 	for (int s = 0; s < NSLOT; s++) {
 		XiSlot &S = g_xiSlot[s];
 		if (!S.inUse)
@@ -460,14 +344,15 @@ class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
 			// Xbox 360 XInput gamepad descriptor.
 			// Match Santroller's known-working descriptor byte-for-byte for subtype 0x01.
 			0x11, 0x21, 0x10, 0x01, 0x01, 0x25, epin, 0x14,
-			0x03, 0x03, 0x03, 0x04, 0x13, (g_xbox360ConsoleMode ? 0x02 : epout), 0x08, 0x03, 0x03,
+			0x03, 0x03, 0x03, 0x04, 0x13, epout, 0x08, 0x03, 0x03,
 
 			// Endpoint IN: 32-byte interrupt, 1 ms interval.
 			7, TUSB_DESC_ENDPOINT, epin, TUSB_XFER_INTERRUPT,
-			U16_TO_U8S_LE(0x20), (g_xbox360ConsoleMode ? 4 : 1),
+			U16_TO_U8S_LE(0x20), 1,
 
 			// Endpoint OUT: match Santroller's 1 ms interval.
-			7, TUSB_DESC_ENDPOINT, (g_xbox360ConsoleMode ? 0x02 : epout), TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(0x20), (g_xbox360ConsoleMode ? 8 : 1)
+			7, TUSB_DESC_ENDPOINT, epout, TUSB_XFER_INTERRUPT,
+			U16_TO_U8S_LE(0x20), 1
 		};
 		memcpy(buf, t, XINPUT_DESC_LEN);
 		return XINPUT_DESC_LEN;
@@ -476,77 +361,6 @@ class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
 	{
 		return TinyUSBDevice.addInterface(*this);
 	}
-};
-
-
-class Adafruit_USBD_XInputAux1 : public Adafruit_USBD_Interface {
-    public:
-    uint16_t getInterfaceDescriptor(uint8_t, uint8_t *buf,
-                                    uint16_t bufsize) override
-    {
-            if (!buf)
-                    return XINPUT_AUX1_DESC_LEN;
-            if (bufsize < XINPUT_AUX1_DESC_LEN)
-                    return 0;
-
-            uint8_t itfnum = TinyUSBDevice.allocInterface(1);
-            uint8_t epin1 = TinyUSBDevice.allocEndpoint(TUSB_DIR_IN);
-            uint8_t epout1 = TinyUSBDevice.allocEndpoint(TUSB_DIR_OUT);
-            uint8_t epin2 = TinyUSBDevice.allocEndpoint(TUSB_DIR_IN);
-            uint8_t epout2 = TinyUSBDevice.allocEndpoint(TUSB_DIR_OUT);
-
-            const uint8_t t[XINPUT_AUX1_DESC_LEN] = {
-                    9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x04,
-                    0xFF, 0x5D, 0x03, 0x00,
-
-                    0x1B, 0x21, 0x10, 0x01, 0x01, 0x01,
-                    0x83, 0x40, 0x01, 0x04, 0x20, 0x16,
-                    0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16,
-                    0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-
-                    7, TUSB_DESC_ENDPOINT, 0x83, TUSB_XFER_INTERRUPT,
-                    U16_TO_U8S_LE(0x20), 2,
-                    7, TUSB_DESC_ENDPOINT, 0x04, TUSB_XFER_INTERRUPT,
-                    U16_TO_U8S_LE(0x20), 4,
-                    7, TUSB_DESC_ENDPOINT, 0x85, TUSB_XFER_INTERRUPT,
-                    U16_TO_U8S_LE(0x20), 64,
-                    7, TUSB_DESC_ENDPOINT, 0x05, TUSB_XFER_INTERRUPT,
-                    U16_TO_U8S_LE(0x20), 16
-            };
-            memcpy(buf, t, sizeof t);
-            return sizeof t;
-    }
-
-    bool begin() { return TinyUSBDevice.addInterface(*this); }
-};
-
-class Adafruit_USBD_XInputAux2 : public Adafruit_USBD_Interface {
-    public:
-    uint16_t getInterfaceDescriptor(uint8_t, uint8_t *buf,
-                                    uint16_t bufsize) override
-    {
-            if (!buf)
-                    return XINPUT_AUX2_DESC_LEN;
-            if (bufsize < XINPUT_AUX2_DESC_LEN)
-                    return 0;
-
-            uint8_t itfnum = TinyUSBDevice.allocInterface(1);
-            uint8_t epin = TinyUSBDevice.allocEndpoint(TUSB_DIR_IN);
-
-            const uint8_t t[XINPUT_AUX2_DESC_LEN] = {
-                    9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x01,
-                    0xFF, 0x5D, 0x02, 0x00,
-
-                    0x09, 0x21, 0x10, 0x01, 0x01, 0x22, 0x86, 0x07, 0x00,
-
-                    7, TUSB_DESC_ENDPOINT, 0x86, TUSB_XFER_INTERRUPT,
-                    U16_TO_U8S_LE(0x20), 16
-            };
-            memcpy(buf, t, sizeof t);
-            return sizeof t;
-    }
-
-    bool begin() { return TinyUSBDevice.addInterface(*this); }
 };
 
 class Adafruit_USBD_XInputSecurity : public Adafruit_USBD_Interface {
@@ -578,8 +392,6 @@ class Adafruit_USBD_XInputSecurity : public Adafruit_USBD_Interface {
 // NSLOT instances: each registers its own XInput interface (own itfnum + IN/OUT ep pair) during begin().
 // begin() in XboxController::begin() runs in order 0..NSLOT-1, so xi_open's first-free assignment lines up.
 static Adafruit_USBD_XInput g_xinput[NSLOT];
-static Adafruit_USBD_XInputAux1 g_xinputAux1;
-static Adafruit_USBD_XInputAux2 g_xinputAux2;
 static Adafruit_USBD_XInputSecurity g_xsm3Security;
 static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
 		       int16_t lx, int16_t ly, int16_t rx, int16_t ry)
@@ -821,22 +633,21 @@ void XboxController::begin()
 // wake mouse + right-pad mouse do). Slots are limited by NSLOT / USB endpoints, not HID instances.
 uint8_t XboxController::maxSlots() const
 {
-    return g_xbox360ConsoleMode ? 1u : (uint8_t)NSLOT;
+	return (uint8_t)NSLOT;
 }
 void XboxController::usbIdentity()
 {
 	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
 	USBDevice.setDeviceVersion(0x0120);
-	if (g_xbox360ConsoleMode)
-        USBDevice.setManufacturerDescriptor("©Microsoft Corporation");
-    else
-        USBDevice.setManufacturerDescriptor("Microsoft");
+	USBDevice.setManufacturerDescriptor("Microsoft");
 	USBDevice.setProductDescriptor("Controller");
 }
 void XboxController::beginPool()
 {
     if (!g_xbox360ConsoleMode) {
+            // PC XInput keeps the right-pad mouse and human-readable
+            // per-interface strings.
             g_mouse.setStringDescriptor("OpenPuck Mouse");
             g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
             g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC);
@@ -845,39 +656,31 @@ void XboxController::beginPool()
 
             for (int s = 0; s < NSLOT; s++)
                     g_xinput[s].setStringDescriptor("Controller");
+    } else {
+            // Console mode must not allocate mouse/XInput interface strings.
+            // Device strings are already 1/2/3, so this becomes string 4,
+            // matching the Xbox security-interface layout we are testing.
+            g_xsm3Security.setStringDescriptor(
+                    "Xbox Security Method 3, Version 1.00, (C) 2005 Microsoft Corporation. All rights reserved.");
     }
 
-    // Console-mode XSM3 string registration is deferred to mountSlots(),
-    // after usbReenumerate() has called USBDevice.clearConfiguration().
+    // Drain the deferred XInput IN transfers from the usbd task every SOF.
     usbTxRegisterDrain(xiSofDrain);
 }
 void XboxController::mountSlots(uint8_t k)
 {
-    Serial.printf("mountSlots(): console=%d, slots=%u\n",
-                  g_xbox360ConsoleMode, k);
+	Serial.printf("mountSlots(): console=%d, slots=%u\n",
+		      g_xbox360ConsoleMode, k);
 
-    if (g_xbox360ConsoleMode) {
-            USBDevice.setConfigurationMaxPower(500);
-            // Licensed wired-controller topology:
-            // IF0 FF/5D/01 gamepad
-            // IF1 FF/5D/03 auxiliary
-            // IF2 FF/5D/02 auxiliary
-            // IF3 FF/FD/13 XSM3 security
-            USBDevice.addInterface(g_xinput[0]);
-            USBDevice.addInterface(g_xinputAux1);
-            USBDevice.addInterface(g_xinputAux2);
+	// PC XInput keeps the right-pad mouse. Console mode stays clean and adds XSM3 authentication.
+	if (!g_xbox360ConsoleMode)
+		USBDevice.addInterface(g_mouse);
 
-            // clearConfiguration() resets the string pool on every dynamic
-            // rebuild, so XSM3 string registration must happen here.
-            g_xsm3Security.setStringDescriptor(
-                    "Xbox Security Method 3, Version 1.00, © 2005 Microsoft Corporation. All rights reserved.");
-            USBDevice.addInterface(g_xsm3Security);
-            return;
-    }
+	for (uint8_t u = 0; u < k; u++)
+		USBDevice.addInterface(g_xinput[u]);
 
-    USBDevice.addInterface(g_mouse);
-    for (uint8_t u = 0; u < k; u++)
-            USBDevice.addInterface(g_xinput[u]);
+	if (g_xbox360ConsoleMode)
+		USBDevice.addInterface(g_xsm3Security);
 }
 void XboxController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				uint8_t bodyTlen)

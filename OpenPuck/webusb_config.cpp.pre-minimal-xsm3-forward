@@ -18,36 +18,9 @@
 
 Adafruit_USBD_WebUSB usb_web;
 
-// MODE_XBOX360_CONSOLE XSM3 vendor/interface bridge.
-bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
-                                   tusb_control_request_t const *request);
-// Staged XSM3 gate for isolating the Xbox-only crash.
-// Change X360_XSM3_MAX_REQUEST between builds:
-//   0x81 = identification only
-//   0x82 = allow identification + challenge-init
-//   0x86 = also allow state query
-//   0x83 = allow through challenge-response
-//
-// Note: request order is not numeric, so the allow-list below is explicit.
-#ifndef X360_XSM3_MAX_REQUEST
-#define X360_XSM3_MAX_REQUEST 0x82
-#endif
-
-static inline bool x360Xsm3RequestAllowed(uint8_t req)
-{
-#if X360_XSM3_MAX_REQUEST == 0x81
-        return req == 0x81;
-#elif X360_XSM3_MAX_REQUEST == 0x82
-        return req == 0x81 || req == 0x82;
-#elif X360_XSM3_MAX_REQUEST == 0x86
-        return req == 0x81 || req == 0x82 || req == 0x86;
-#elif X360_XSM3_MAX_REQUEST == 0x83
-        return req == 0x81 || req == 0x82 || req == 0x86 || req == 0x83;
-#else
-#error Unsupported X360_XSM3_MAX_REQUEST value
-#endif
-}
-
+// Xbox 360 XSM3 vendor/interface requests must be forwarded before WebUSB.
+bool xbox360ConsoleVendorControlXfer(uint8_t rhport, uint8_t stage,
+                              tusb_control_request_t const *request);
 
 // Vendor-type control requests and the vendor interface's class requests both land on one global TinyUSB
 // callback, which the Adafruit core defines for WebUSB. Linker wrapping (-Wl,--wrap, set in the Makefile)
@@ -63,17 +36,13 @@ extern "C" bool
 __wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
 				  const tusb_control_request_t *request)
 {
-        // TinyUSB 1.7.0 sends all VENDOR requests here before recipient routing.
-        // Forward only Xbox Security Method 3 interface-3 requests.
+        // TinyUSB 1.7.0 dispatches every VENDOR request here before checking
+        // recipient/interface. XSM3 uses vendor+interface requests (C1/41),
+        // so Mode 11 must route them into xi_ctrl() here.
         if (g_usbMode == MODE_XBOX360_CONSOLE &&
             (request->bmRequestType & 0x60) == 0x40 &&
-            (request->bmRequestType & 0x1F) == 0x01 &&
-            (uint8_t)request->wIndex == 3 &&
-            request->bRequest >= 0x81 &&
-            request->bRequest <= 0x87) {
-                if (!x360Xsm3RequestAllowed(request->bRequest))
-                        return false;
-                return xbox360ConsoleXsm3ControlXfer(rhport, stage, request);
+            (request->bmRequestType & 0x1F) == 0x01) {
+                return xbox360ConsoleVendorControlXfer(rhport, stage, request);
         }
 
 	if (g_usbMode == MODE_XBOX_OG &&

@@ -30,7 +30,7 @@ bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
 //
 // Note: request order is not numeric, so the allow-list below is explicit.
 #ifndef X360_XSM3_MAX_REQUEST
-#define X360_XSM3_MAX_REQUEST 0x82
+#define X360_XSM3_MAX_REQUEST 0x81
 #endif
 
 static inline bool x360Xsm3RequestAllowed(uint8_t req)

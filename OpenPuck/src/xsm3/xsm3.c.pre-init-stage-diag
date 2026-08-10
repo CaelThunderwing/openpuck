@@ -162,34 +162,18 @@ void xsm3_generate_kv_keys(const uint8_t console_id[0x8]) {
     UsbdSecXSM3AuthenticationCrypt(xsm3_root_key_0x24, console_id_hash + 0x4, 0x10, xsm3_kv_2des_key_2, 1);
 }
 
-#ifndef XSM3_INIT_DIAG_STAGE
-#define XSM3_INIT_DIAG_STAGE 2
-#endif
-
 void xsm3_do_challenge_init(uint8_t challenge_packet[0x22]) {
     uint8_t incoming_packet_mac[0x8];
     uint8_t response_packet_mac[0x8];
     int i = 0;
-
-#if XSM3_INIT_DIAG_STAGE == 0
-    return;
-#endif
 
     // validate the checksum
     if (!xsm3_verify_checksum(challenge_packet)) {
         XSM3_printf("[ Checksum failed when validating challenge init! ]\n");
     }
 
-#if XSM3_INIT_DIAG_STAGE == 1
-    return;
-#endif
-
     // decrypt the packet content using the static key from the keyvault
     UsbdSecXSM3AuthenticationCrypt(xsm3_key_0x1D, challenge_packet + 0x5, 0x18, xsm3_decryption_buffer, 0);
-
-#if XSM3_INIT_DIAG_STAGE == 2
-    return;
-#endif
     // first 0x10 bytes are random data
     memcpy(xsm3_random_console_data, xsm3_decryption_buffer, 0x10);
     // next 0x8 bytes are from the console certificate

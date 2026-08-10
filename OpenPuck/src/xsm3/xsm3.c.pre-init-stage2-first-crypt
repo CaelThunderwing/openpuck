@@ -163,7 +163,7 @@ void xsm3_generate_kv_keys(const uint8_t console_id[0x8]) {
 }
 
 #ifndef XSM3_INIT_DIAG_STAGE
-#define XSM3_INIT_DIAG_STAGE 2
+#define XSM3_INIT_DIAG_STAGE 1
 #endif
 
 void xsm3_do_challenge_init(uint8_t challenge_packet[0x22]) {
