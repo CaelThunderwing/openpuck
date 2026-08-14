@@ -408,6 +408,8 @@ const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false, backupBusy=false;
+let stackMapBusy=false; // one-shot 0x17 -> 0xB0 diagnostic owns the shared IN pipe while active
+let fsRawBusy=false; // forensic 0x18 -> 0xB1 dump owns the shared IN pipe while active
 // A ReversePuck CONTROLLER dongle (28DE:1302) speaks a REDUCED subset of this protocol: no status blob /
 // lizard / config, just a paired-pucks list (0xAC) plus the identical firmware-update + DFU ops. When true,
 // the panel shows the controller UI (manage paired pucks + flash) and skips every puck-only poll.
@@ -1107,7 +1109,7 @@ function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ e
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy) return; inflight=true;
+  if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy||stackMapBusy||fsRawBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
   try{
@@ -1503,6 +1505,263 @@ async function stopCapture(){
   $("#capStart").disabled=false; $("#capStop").disabled=true;
   renderCap(); log(`capture stopped — ${capLines.length} entries`);
 }
+// ---- raw InternalFS forensic dump -----------------------------------------------------------
+//
+// Firmware command:
+//   [0x18][relative offset u16 LE]
+//
+// Firmware reply:
+//   [0xB1][payload length]
+//   payload = [version=1][offset u16 LE][data length][raw bytes]
+//
+// The firmware itself constrains reads to 0xED000..0xF3FFF.
+// This routine is intentionally read-only: it sends only 0x18 requests.
+//
+// Console use:
+//     await dumpInternalFsRaw()
+//
+// On success:
+//   - window._lastInternalFsRaw contains the Uint8Array
+//   - window._lastInternalFsSha256 contains its SHA-256
+//   - browser downloads openpuck-internalfs-raw-<timestamp>.bin
+//
+async function dumpInternalFsRaw(){
+  if(!dev) throw new Error("device not connected");
+  if(isDongle) throw new Error("InternalFS raw dump is puck-only");
+  if(fsRawBusy) throw new Error("InternalFS raw dump already active");
+  if(stackMapBusy || capturing || backupBusy || flightBusy || lizardBusy)
+    throw new Error("another WebUSB transfer currently owns the IN pipe");
+
+  const FS_SIZE=0x7000;
+  const CHUNK=120;
+
+  fsRawBusy=true;
+
+  // A status refresh may already be blocked in transferIn(). Because fsRawBusy
+  // is now set, no new refresh can start after that one finishes.
+  for(let i=0;i<100 && inflight;i++)
+    await new Promise(r=>setTimeout(r,20));
+
+  if(inflight){
+    fsRawBusy=false;
+    throw new Error("timed out waiting for status refresh to release IN pipe");
+  }
+
+  const image=new Uint8Array(FS_SIZE);
+
+  try{
+    let off=0;
+    let chunks=0;
+
+    while(off<FS_SIZE){
+      const expected=Math.min(CHUNK,FS_SIZE-off);
+
+      await send([
+        0x18,
+        off & 0xFF,
+        (off >> 8) & 0xFF
+      ]);
+
+      let p=null;
+
+      // Retry reads only. Do NOT resend the command while its firmware-side
+      // request may still be pending.
+      for(let tries=0; tries<12 && !p; tries++)
+        p=await readFrame(0xB1,4,256);
+
+      if(!p)
+        throw new Error(
+          "no complete 0xB1 reply at offset 0x"+
+          off.toString(16).padStart(4,"0")
+        );
+
+      if(p.length<4)
+        throw new Error("short B1 payload at offset "+off);
+
+      const version=p[0];
+      const gotOff=p[1] | (p[2]<<8);
+      const gotLen=p[3];
+
+      if(version!==1)
+        throw new Error(
+          "unexpected B1 version "+version+
+          " at offset 0x"+off.toString(16)
+        );
+
+      if(gotOff!==off)
+        throw new Error(
+          "B1 offset mismatch: requested 0x"+
+          off.toString(16).padStart(4,"0")+
+          ", got 0x"+
+          gotOff.toString(16).padStart(4,"0")
+        );
+
+      if(gotLen!==expected)
+        throw new Error(
+          "B1 length mismatch at 0x"+
+          off.toString(16).padStart(4,"0")+
+          ": expected "+expected+", got "+gotLen
+        );
+
+      if(p.length!==4+gotLen)
+        throw new Error(
+          "B1 payload-size mismatch at 0x"+
+          off.toString(16).padStart(4,"0")+
+          ": header says "+gotLen+
+          " data bytes, payload has "+p.length
+        );
+
+      image.set(p.slice(4,4+gotLen),off);
+
+      off += gotLen;
+      chunks++;
+
+      if((chunks % 24)===0 || off===FS_SIZE){
+        console.log(
+          "InternalFS dump:",
+          off+"/"+FS_SIZE+" bytes",
+          "("+Math.floor(off*100/FS_SIZE)+"%)"
+        );
+      }
+    }
+
+    if(off!==FS_SIZE)
+      throw new Error(
+        "dump ended at "+off+" bytes instead of "+FS_SIZE
+      );
+
+    // Hash exactly what we received before creating the downloadable Blob.
+    const digest=await crypto.subtle.digest("SHA-256",image);
+    const sha256=Array.from(new Uint8Array(digest))
+      .map(v=>v.toString(16).padStart(2,"0"))
+      .join("");
+
+    window._lastInternalFsRaw=image;
+    window._lastInternalFsSha256=sha256;
+
+    console.log(
+      "INTERNALFS RAW DUMP COMPLETE",
+      "size="+image.length,
+      "range=0xED000-0xF3FFF",
+      "sha256="+sha256
+    );
+
+    const blob=new Blob([image],{type:"application/octet-stream"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+
+    const stamp=new Date()
+      .toISOString()
+      .replace(/[:.]/g,"-");
+
+    a.href=url;
+    a.download="openpuck-internalfs-raw-"+stamp+".bin";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    // The click has already handed the Blob to the browser. Revoke shortly
+    // afterward rather than retaining the object URL indefinitely.
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+
+    return {
+      size:image.length,
+      sha256,
+      bytes:image
+    };
+  }
+  finally{
+    fsRawBusy=false;
+  }
+}
+
+
+// ---- live loop-stack map diagnostic ---------------------------------------------------------
+// Firmware 0x17 captures the loop task's stack map in loop context and returns one
+// [0xB0][146-byte payload] frame. This diagnostic temporarily owns the shared WebUSB
+// IN endpoint so the ordinary A5 status poll cannot consume the B0 reply.
+//
+// Console use:
+//     await readLoopStackMap()
+//
+// Returned object is also saved as window._lastStackMap.
+async function readLoopStackMap(){
+  if(!dev) throw new Error("device not connected");
+  if(isDongle) throw new Error("loop stack map is puck-only");
+  if(stackMapBusy) throw new Error("stack-map read already active");
+
+  stackMapBusy=true;
+
+  // refresh() may already own transferIn(). Wait until that read has completed
+  // before issuing 0x17. refresh() must also honor stackMapBusy; patched below.
+  for(let i=0;i<50 && inflight;i++)
+    await new Promise(r=>setTimeout(r,20));
+
+  try{
+    await send([0x17]);
+
+    // The complete B0 frame is 148 bytes. transferIn(256) is deliberately
+    // generous and matches the existing framed-reader convention.
+    let p=null;
+    for(let tries=0; tries<8 && !p; tries++){
+      p=await readFrame(0xB0,146,256);
+    }
+    if(!p) throw new Error("no complete 0xB0 stack-map reply");
+    if(p.length < 146) throw new Error("short B0 payload: "+p.length);
+
+    const u16=o=>p[o]|(p[o+1]<<8);
+    const u32=o=>(p[o] |
+                  (p[o+1]<<8) |
+                  (p[o+2]<<16) |
+                  (p[o+3]<<24)) >>> 0;
+    const hex32=v=>"0x"+v.toString(16).padStart(8,"0").toUpperCase();
+    const hex8=v=>v.toString(16).padStart(2,"0").toUpperCase();
+
+    const m={
+      version:p[0],
+      valid:!!(p[1]&1),
+      flags:p[1],
+      base:u32(2),
+      sp:u32(6),
+      hwm:u16(10),
+      prefix:u16(12),
+      laterA5:u16(14),
+      stackBytes:u16(16),
+      raw:p.slice(18,146)
+    };
+
+    window._lastStackMap=m;
+
+    console.log(
+      "STACKMAP",
+      "version="+m.version,
+      "valid="+m.valid,
+      "base="+hex32(m.base),
+      "sp="+hex32(m.sp),
+      "spoff="+
+        (m.valid && m.sp>=m.base && m.sp<=m.base+m.stackBytes
+          ? (m.sp-m.base)
+          : "OUT"),
+      "hwm="+m.hwm+"w",
+      "prefix="+m.prefix+"B",
+      "laterA5="+(m.laterA5===0xFFFF ? "none" : m.laterA5+"B"),
+      "stackBytes="+m.stackBytes
+    );
+
+    let dump="";
+    for(let off=0; off<128; off+=16){
+      dump +=
+        "+"+off.toString(16).padStart(3,"0").toUpperCase()+": "+
+        Array.from(m.raw.slice(off,off+16),hex8).join(" ")+"\n";
+    }
+    console.log(dump);
+
+    return m;
+  } finally {
+    stackMapBusy=false;
+  }
+}
+
 async function startPolling(){
   polling=true; await refresh();
   while(polling && dev){

@@ -30,7 +30,7 @@ bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
 //
 // Note: request order is not numeric, so the allow-list below is explicit.
 #ifndef X360_XSM3_MAX_REQUEST
-#define X360_XSM3_MAX_REQUEST 0x82
+#define X360_XSM3_MAX_REQUEST 0x86
 #endif
 
 static inline bool x360Xsm3RequestAllowed(uint8_t req)
@@ -96,6 +96,72 @@ static volatile bool g_blobRequest = false;
 // browser can save them to a file and restore them onto a second puck. Like the status blob, the actual send
 // is deferred to the usbd task (webusbSofDrain) so usb_web.write()/flush() never block loop().
 static volatile bool g_bondExportRequest = false;
+static volatile bool g_blackBoxRequest = false;
+
+// Read-only persistent destructive-operation breadcrumb.
+//
+// Host command:
+//   [0x19]
+//
+// Reply:
+//   [0xB2][2][version=1][destructive mask]
+//
+// Reading this does not alter the black-box flash page.
+static volatile bool g_destructiveMaskRequest = false;
+
+// Read-only firmware-update metadata probe.
+//
+// Host command:
+//   [0x1A]
+//
+// Reply:
+//   [0xB3][18]
+//   [version=1][flags][16 raw bytes from 0xEC000]
+//
+// flags:
+//   bit0 = exact stale WIPE marker pair present
+//   bit1 = normal UPF2 metadata magic present
+//
+// No flash write, erase, filesystem access, mode change, or reset.
+static volatile bool g_fwupMetaRequest = false;
+
+
+// Read-only mode-independent persistent MCU boot history.
+//
+// Host command:
+//   [0x1B]
+//
+// Reply:
+//   [0xB5][244-byte payload]
+//
+// Requesting this frame never modifies the boot-history store.
+static volatile bool g_bootHistRequest = false;
+
+#define WB_FWUP_META_ADDR 0xEC000UL
+
+// Read-only raw InternalFS forensic reader.
+//
+// Host command:
+//   [0x18][offset lo][offset hi]
+//
+// offset is relative to the fixed nRF52840 LittleFS region
+// 0xED000..0xF3FFF. The response contains at most 120 raw bytes.
+// No filesystem API and no NVMC operation is used.
+static volatile bool g_fsRawRequest = false;
+static volatile uint16_t g_fsRawOffset = 0;
+
+#define WB_FSRAW_BASE      0xED000UL
+#define WB_FSRAW_END       0xF4000UL
+#define WB_FSRAW_SIZE      (WB_FSRAW_END - WB_FSRAW_BASE)
+#define WB_FSRAW_CHUNK     120u
+
+// Live loop-stack map diagnostic.
+// 0x17 is parsed in loop context, where the potentially expensive 4-KiB
+// A5-pattern scan is performed. The usbd/SOF task only serializes this
+// already-captured static snapshot, so it never scans another task's stack.
+static volatile bool g_stackMapRequest = false;
+static struct FaultDiagStackMap g_stackMap;
+static bool g_stackMapValid = false;
 // Firmware-update ack ([0xAB][5][status][nextOff u32 LE]). Like the blob it is written from the usbd task
 // (webusbSofDrain), but unlike the blob it is NEVER dropped -- the panel's transfer flow-control is strict
 // ping-pong on these acks, so an unsent ack just stays pending until the FIFO has room (the panel is
@@ -400,6 +466,350 @@ static void webusbSendBondExport()
 	}
 }
 
+
+// Persistent flash black-box export.
+// Host request 0x16 -> one [0xAC][70-byte payload] frame.
+// Read-only: querying this frame never alters BB_ADDR or the word-12 seen marker.
+#define WB_BLACKBOX_PAYLEN 70
+static bool webusbSendBlackBoxPending()
+{
+        if (!usb_web.connected())
+                return false;
+
+        struct FaultBlackBox b;
+        bool have = faultDiagBlackBoxSnapshot(&b);
+        static uint8_t f[2 + WB_BLACKBOX_PAYLEN];
+        memset(f, 0, sizeof f);
+        f[0] = 0xAC;
+        f[1] = WB_BLACKBOX_PAYLEN;
+        f[2] = 1;
+
+        // Shared by the legacy black-box fields and optional BSS1 tail.
+        auto put16 = [&](int off, uint16_t v) {
+                f[off] = (uint8_t)v;
+                f[off + 1] = (uint8_t)(v >> 8);
+        };
+        auto put32 = [&](int off, uint32_t v) {
+                f[off] = (uint8_t)v;
+                f[off + 1] = (uint8_t)(v >> 8);
+                f[off + 2] = (uint8_t)(v >> 16);
+                f[off + 3] = (uint8_t)(v >> 24);
+        };
+
+        if (have && b.valid) {
+                f[3] = 0x01u | (b.usbdRegsReadable ? 0x02u : 0);
+                f[4] = b.version;
+                f[5] = b.stage;
+                put32(6,  b.loopPC);
+                put32(10, b.irqPC);
+                put32(14, b.usbdPC);
+                put16(18, b.usbdStackFree);
+                put16(20, b.loopStackFree);
+                put16(22, b.pollsps);
+                put16(24, b.relayps);
+                put32(26, b.wedgeMs);
+                put32(30, b.usbdEvents);
+                put32(34, b.usbdInten);
+                put32(38, b.epDataStatus);
+                put32(42, b.epEnable);
+        }
+
+        // Optional BSS1 scheduler/re-enumeration extension.
+        //
+        // Keep bytes 0..45 of the complete 0xAC frame exactly compatible
+        // with the original 44-byte payload.  The extension starts at f[46].
+        uint32_t bs[6];
+        f[46] = 1; // BSS extension version
+        if (faultDiagBssSnapshot(bs)) {
+                f[47] = 1; // valid
+                for (int j = 0; j < 6; ++j)
+                        put32(48 + 4 * j, bs[j]);
+        }
+
+        if (tud_vendor_write_available() < sizeof f)
+                return false;
+
+        usb_web.write(f, sizeof f);
+        usb_web.flush();
+        return true;
+}
+
+
+// Read-only firmware-update metadata probe.
+//
+// Host request 0x1A -> [0xB3][18-byte payload].
+// Payload: [version][flags][16 raw bytes from FWUP_META].
+//
+// Exact markers:
+//   WIPE = 0x57495045, followed by its bitwise complement
+//   UPF2 = 0x32465055
+
+// Persistent mode-independent MCU boot-history export.
+//
+// Host request 0x1B -> [0xB5][244-byte payload].
+//
+// Payload:
+//   0      export version
+//   1      valid
+//   2      retained count
+//   3      reserved
+//   4..7   transactional generation LE
+//   8..11  next sequence number LE
+//   12..   eight fixed 29-byte records:
+//            seq         u32 LE
+//            RESETREAS   u32 LE
+//            mode        u8
+//            reason      u8
+//            GPREGRET2   u8
+//            reserved    u8
+//            faultPC     u32 LE
+//            faultLR     u32 LE
+//            CFSR        u32 LE
+//            HFSR        u32 LE
+//            wire pad    u8
+//
+// Complete frame = 246 bytes. Read-only.
+#define WB_BOOTHIST_PAYLEN 244
+
+static bool webusbSendBootHistPending()
+{
+        if (!usb_web.connected())
+                return false;
+
+        struct FaultBootHistSnapshot b;
+        bool have = faultDiagBootHistSnapshot(&b);
+
+        static uint8_t f[2 + WB_BOOTHIST_PAYLEN];
+        memset(f, 0, sizeof f);
+
+        f[0] = 0xB5;
+        f[1] = WB_BOOTHIST_PAYLEN;
+
+        auto put32 = [&](int off, uint32_t v) {
+                f[off] = (uint8_t)v;
+                f[off + 1] = (uint8_t)(v >> 8);
+                f[off + 2] = (uint8_t)(v >> 16);
+                f[off + 3] = (uint8_t)(v >> 24);
+        };
+
+        f[2] = 2;
+        f[3] = have ? 1 : 0;
+        f[4] = have ? b.count : 0;
+        f[5] = 0;
+
+        if (have) {
+                put32(6, b.generation);
+                put32(10, b.nextSeq);
+
+                for (uint8_t i = 0; i < b.count && i < 8; ++i) {
+                        int off = 14 + 29 * i;
+
+                        put32(off + 0,  b.rec[i].seq);
+                        put32(off + 4,  b.rec[i].resetReas);
+                        f[off + 8] = b.rec[i].mode;
+                        f[off + 9] = b.rec[i].reason;
+                        f[off + 10] = b.rec[i].gpregret2;
+                        f[off + 11] = b.rec[i].reserved;
+                        put32(off + 12, b.rec[i].faultPC);
+                        put32(off + 16, b.rec[i].faultLR);
+                        put32(off + 20, b.rec[i].faultCFSR);
+                        put32(off + 24, b.rec[i].faultHFSR);
+                        f[off + 28] = 0;
+                }
+        }
+
+        if (tud_vendor_write_available() < sizeof f)
+                return false;
+
+        usb_web.write(f, sizeof f);
+        usb_web.flush();
+        return true;
+}
+
+
+static bool webusbSendFwupMetaPending()
+{
+        if (!usb_web.connected())
+                return false;
+
+        const volatile uint8_t *src =
+                (const volatile uint8_t *)WB_FWUP_META_ADDR;
+
+        static uint8_t f[2 + 18];
+        f[0] = 0xB3;
+        f[1] = 18;
+        f[2] = 1;
+
+        uint32_t w0 =
+                (uint32_t)src[0] |
+                ((uint32_t)src[1] << 8) |
+                ((uint32_t)src[2] << 16) |
+                ((uint32_t)src[3] << 24);
+
+        uint32_t w1 =
+                (uint32_t)src[4] |
+                ((uint32_t)src[5] << 8) |
+                ((uint32_t)src[6] << 16) |
+                ((uint32_t)src[7] << 24);
+
+        uint8_t flags = 0;
+
+        if (w0 == 0x57495045UL &&
+            w1 == (uint32_t)~0x57495045UL)
+                flags |= 0x01u;
+
+        if (w0 == 0x32465055UL)
+                flags |= 0x02u;
+
+        f[3] = flags;
+
+        for (uint8_t i = 0; i < 16u; ++i)
+                f[4 + i] = src[i];
+
+        if (tud_vendor_write_available() < sizeof f)
+                return false;
+
+        usb_web.write(f, sizeof f);
+        usb_web.flush();
+        return true;
+}
+
+
+// Persistent destructive-operation breadcrumb export.
+//
+// Host request 0x19 -> [0xB2][2][version=1][mask].
+//
+// faultDiagDestructiveMask() is read-only. This sender performs no
+// filesystem, erase, NVMC-write, mode-change, or reset operation.
+static bool webusbSendDestructiveMaskPending()
+{
+        if (!usb_web.connected())
+                return false;
+
+        uint8_t f[4];
+        f[0] = 0xB2;
+        f[1] = 2;
+        f[2] = 1;
+        f[3] = faultDiagDestructiveMask();
+
+        if (tud_vendor_write_available() < sizeof f)
+                return false;
+
+        usb_web.write(f, sizeof f);
+        usb_web.flush();
+        return true;
+}
+
+
+// Raw InternalFS forensic export.
+//
+// Host request:
+//   [0x18][relative offset u16 LE]
+//
+// Reply:
+//   [0xB1][payload length]
+//   [version=1][offset u16 LE][data length][raw bytes]
+//
+// The address is NOT supplied by the host. It is derived solely from the
+// compile-time filesystem base, and the length is clipped at FS_END.
+// This function contains no erase/write/NVMC/filesystem operation.
+static bool webusbSendFsRawPending()
+{
+        if (!usb_web.connected())
+                return false;
+
+        uint16_t off = g_fsRawOffset;
+
+        if ((uint32_t)off >= WB_FSRAW_SIZE)
+                return true;
+
+        uint32_t remain = WB_FSRAW_SIZE - (uint32_t)off;
+        uint8_t dl = (remain > WB_FSRAW_CHUNK) ?
+                             (uint8_t)WB_FSRAW_CHUNK :
+                             (uint8_t)remain;
+
+        static uint8_t f[2 + 4 + WB_FSRAW_CHUNK];
+
+        f[0] = 0xB1;
+        f[1] = (uint8_t)(4u + dl);
+        f[2] = 1;
+        f[3] = (uint8_t)off;
+        f[4] = (uint8_t)(off >> 8);
+        f[5] = dl;
+
+        const volatile uint8_t *src =
+                (const volatile uint8_t *)(WB_FSRAW_BASE + (uint32_t)off);
+
+        for (uint8_t i = 0; i < dl; ++i)
+                f[6 + i] = src[i];
+
+        const uint16_t frameLen = (uint16_t)(6u + dl);
+
+        if (tud_vendor_write_available() < frameLen)
+                return false;
+
+        usb_web.write(f, frameLen);
+        usb_web.flush();
+        return true;
+}
+
+
+// Live loop-stack map export.
+// Host request 0x17 -> one [0xB0][144-byte payload] frame.
+//
+// Payload:
+//   [0]      format version = 1
+//   [1]      flags: bit0 snapshot valid
+//   [2..5]   stack base u32 LE
+//   [6..9]   saved SP u32 LE
+//   [10..11] HWM words u16 LE
+//   [12..13] untouched A5 prefix bytes u16 LE
+//   [14..15] first later 16-byte A5 run offset, 0xFFFF = none
+//   [16..17] stack allocation bytes u16 LE
+//   [18..145] low 128 stack bytes
+#define WB_STACKMAP_PAYLEN 146
+static bool webusbSendStackMapPending()
+{
+        if (!usb_web.connected())
+                return false;
+
+        static uint8_t f[2 + WB_STACKMAP_PAYLEN];
+        memset(f, 0, sizeof f);
+
+        f[0] = 0xB0;
+        f[1] = WB_STACKMAP_PAYLEN;
+        f[2] = 1; // format version
+        f[3] = g_stackMapValid ? 0x01u : 0;
+
+        if (g_stackMapValid) {
+                auto put16 = [&](int off, uint16_t v) {
+                        f[off] = (uint8_t)v;
+                        f[off + 1] = (uint8_t)(v >> 8);
+                };
+                auto put32 = [&](int off, uint32_t v) {
+                        f[off] = (uint8_t)v;
+                        f[off + 1] = (uint8_t)(v >> 8);
+                        f[off + 2] = (uint8_t)(v >> 16);
+                        f[off + 3] = (uint8_t)(v >> 24);
+                };
+
+                put32(4,  g_stackMap.base);
+                put32(8,  g_stackMap.sp);
+                put16(12, g_stackMap.hwm);
+                put16(14, g_stackMap.prefix);
+                put16(16, g_stackMap.laterA5);
+                put16(18, g_stackMap.stackBytes);
+                memcpy(&f[20], g_stackMap.raw, sizeof g_stackMap.raw);
+        }
+
+        if (tud_vendor_write_available() < sizeof f)
+                return false;
+
+        usb_web.write(f, sizeof f);
+        usb_web.flush();
+        return true;
+}
+
 // Stream the saved (pre-reset) flight-recorder trail to the panel as 0xA8 frames. Always compiled -- the
 // recorder is not OPK_LOG-gated (field hangs happen on release builds too). Frame layout mirrors the 0xA6
 // capture drain so the same drop-on-full discipline applies (a write only issues when the FIFO can take the
@@ -538,6 +948,36 @@ static void webusbSofDrain(void)
 		g_bondExportRequest = false;
 		webusbSendBondExport();
 	}
+    // Forensic black-box replies are not disposable status telemetry.
+    // Keep the request pending and retry on later SOFs until the full frame
+    // has actually been queued into the vendor FIFO.
+    if (g_blackBoxRequest && webusbSendBlackBoxPending())
+            g_blackBoxRequest = false;
+
+    // Firmware-update metadata is forensic evidence too:
+    // retain the request until the complete B3 frame is queued.
+    if (g_fwupMetaRequest && webusbSendFwupMetaPending())
+            g_fwupMetaRequest = false;
+
+    // Mode-independent boot history is forensic evidence too.
+    if (g_bootHistRequest && webusbSendBootHistPending())
+            g_bootHistRequest = false;
+
+
+    // Persistent destructive breadcrumb is forensic evidence too:
+    // retain the request until the complete four-byte reply is queued.
+    if (g_destructiveMaskRequest && webusbSendDestructiveMaskPending())
+            g_destructiveMaskRequest = false;
+
+    // Raw InternalFS forensic replies are likewise non-disposable.
+    // The sender is strictly read-only and bounded to 0xED000..0xF3FFF.
+    if (g_fsRawRequest && webusbSendFsRawPending())
+            g_fsRawRequest = false;
+
+    // Like the persistent black-box reply, this diagnostic is not disposable.
+    // Retry on later SOFs until the whole B0 frame fits the vendor FIFO.
+    if (g_stackMapRequest && webusbSendStackMapPending())
+            g_stackMapRequest = false;
 }
 // ---- live wedge reporter (0xA9) --------------------------------------------------------------------------
 // THE one channel that survives a loop() wedge on boards that wipe .noinit/GPREGRET across the watchdog reset
@@ -690,8 +1130,8 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			if ((op < 0x01 || op > 0x15) &&
-			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
+			if ((op < 0x01 || op > 0x1B) &&
+                            (op < 0x20 || op > 0x25)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
 			}
@@ -716,7 +1156,8 @@ void webusbPoll()
 				 op == 0x0F || op == 0x10 || op == 0x13) ?
 					       2 :
 				(op == 0x0A) ? 4 :
-				(op == 0x25) ? 5 :
+				(op == 0x18) ? 3 :
+                                (op == 0x25) ? 5 :
 				(op == 0x20) ? 9 :
 				(op == 0x21) ? (uint8_t)(6 + (n >= 6 ? buf[5] :
 								       0)) :
@@ -736,6 +1177,42 @@ void webusbPoll()
 			else if (op == 0x09) {
 				g_bondExportRequest = true;
 			}
+                    // 0x16: request persistent flash black box (0xAC response via SOF drain).
+                    else if (op == 0x16) {
+                            g_blackBoxRequest = true;
+                    }
+                    // 0x1A: read firmware-update metadata page header.
+                    else if (op == 0x1A) {
+                            g_fwupMetaRequest = true;
+                    }
+                    // 0x1B: read persistent MCU boot history.
+                    else if (op == 0x1B) {
+                            g_bootHistRequest = true;
+                    }
+                    // 0x19: read persistent destructive-operation breadcrumb.
+                    else if (op == 0x19) {
+                            g_destructiveMaskRequest = true;
+                    }
+                    // 0x18: bounded, read-only raw InternalFS window.
+                    // Host supplies only a relative 16-bit offset.
+                    else if (op == 0x18) {
+                            uint16_t off =
+                                    (uint16_t)buf[1] |
+                                    ((uint16_t)buf[2] << 8);
+                            if ((uint32_t)off < WB_FSRAW_SIZE &&
+                                !g_fsRawRequest) {
+                                    g_fsRawOffset = off;
+                                    g_fsRawRequest = true;
+                            }
+                    }
+                    // 0x17: capture the live loop-stack A5 map NOW, in loop
+                    // context. The SOF/usbd task only transports the completed
+                    // static snapshot as a 0xB0 frame.
+                    else if (op == 0x17) {
+                            g_stackMapValid =
+                                    faultDiagCaptureLoopStack(&g_stackMap);
+                            g_stackMapRequest = true;
+                    }
 			// 0x0F: stability test on/off. Puck->controller haptics do NOT reset the controller's own
 			// user-input idle auto-off (we already poll it every 4ms without keeping it awake), so instead
 			// signal host-awake: enable the E7 announce (0xE7 00 00 = host-awake vs 00 01 = suspended, per
@@ -779,6 +1256,7 @@ void webusbPoll()
 				if (buf[1] == 0x45 && buf[2] == 0x52 &&
 				    buf[3] == 0x53) {
 					usb_web.flush();
+					faultDiagMarkDestructive(1);
 					factoryErase();
 					delay(40);
 					faultDiagArmIntentionalReset();
@@ -805,14 +1283,15 @@ void webusbPoll()
 				// reformats settings but keeps the firmware). Guarded by the 4-byte magic "WIPE" so no stray
 				// byte can ever trigger it. Irreversible without re-flashing.
 			} else if (op == 0x25) {
-				if (buf[1] == 0x57 && buf[2] == 0x49 &&
-				    buf[3] == 0x50 && buf[4] == 0x45) {
-					usb_web.flush();
-					fwupArmFullWipe();
-					delay(40);
-					faultDiagArmIntentionalReset();
-					NVIC_SystemReset();
-				}
+				// SAFETY HARDENING:
+                           // Full-board wipe is disabled in this branch.
+                           //
+                           // Keep consuming the legacy five-byte command so
+                           // older panels stay parser-compatible, but never
+                           // arm FWUP_META and never reset the board.
+                           //
+                           // Intentionally no flash write or destructive side effect.
+                           g_blobRequest = true;
 
 				// 0x0D: write ONE bond slot into RAM -- the "clone onto this puck" side of Export/Import.
 				// [0x0D][slot][used][24 rec]. used=0 (or an empty record) clears the slot. The panel sends

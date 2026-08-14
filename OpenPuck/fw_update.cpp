@@ -439,26 +439,22 @@ FWUP_RAMFUNC static void ramWipe(uint32_t appBase, uint32_t appEnd,
 
 void fwupWipeIfArmed(void)
 {
-	const volatile uint32_t *m = (const volatile uint32_t *)FWUP_META;
-	if (m[0] != FWUP_WIPE_MAGIC || m[1] != (uint32_t)~FWUP_WIPE_MAGIC)
-		return; // not armed (the common path): erased page or a FwupMeta -> nothing to do
-	// Point of no return -- identical freeze discipline to fwupApplyIfArmed: IRQs off, WDT forced on so a
-	// fault mid-erase still resets into the safe app-less state. The erase (~200 pages) drops USB the instant
-	// it starts; the WDT is reloaded per page so the ~18 s run never trips it.
-	__disable_irq();
-	if (!NRF_WDT->RUNSTATUS) {
-		NRF_WDT->CONFIG =
-			(WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
-			(WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
-		NRF_WDT->CRV = 8UL * 32768UL - 1; // ~8 s
-		NRF_WDT->RREN = WDT_RREN_RR0_Msk;
-		NRF_WDT->TASKS_START = 1;
-	}
-	NRF_WDT->RR[0] = WDT_RR_RR_Reload;
-	void (*volatile wipe)(uint32_t, uint32_t, uint32_t, uint32_t,
-			      uint32_t) = ramWipe;
-	wipe(FWUP_APP_BASE, FWUP_APP_END, FWUP_FS_BASE, FWUP_FS_END,
-	     FWUP_BL_SETTINGS);
-	for (;;) {
-	} // unreachable (ramWipe resets)
+    const volatile uint32_t *m = (const volatile uint32_t *)FWUP_META;
+
+    if (m[0] != FWUP_WIPE_MAGIC ||
+        m[1] != (uint32_t)~FWUP_WIPE_MAGIC)
+            return;
+
+    // SAFETY HARDENING:
+    //
+    // Older OpenPuck builds could leave a persistent full-board WIPE
+    // marker in FWUP_META.  A later application/UF2 flash does not
+    // necessarily touch this page, so honoring such a stale marker here
+    // could erase the newly flashed application, InternalFS, and the
+    // bootloader-settings page.
+    //
+    // Deliberately leave the marker untouched.  This makes detection
+    // completely read-only and preserves the marker for forensic inspection.
+    // Full-board wipe is disabled in this branch.
+    return;
 }

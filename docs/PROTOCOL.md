@@ -533,3 +533,29 @@ To build a compatible puck from scratch:
 9. Re-enumerate USB cleanly when switching Steam/Xbox/Switch modes (Xbox/Switch as clean non-composite devices).
 
 If those pieces match, the controller-to-puck protocol is fully reimplemented.
+
+
+### Persistent flash black box (`0x16` → `0xAC`)
+
+Host command `0x16` requests the most recent persistent pre-watchdog flash
+black-box record. The request is read-only and does not erase the record or
+modify its seen marker.
+
+Reply: `[0xAC][44][payload]`, payload version 1.
+
+- byte 0: transport format version (`1`)
+- byte 1: flags (`bit0=valid`, `bit1=USBD phase-2 registers readable`)
+- byte 2: black-box record version
+- byte 3: loop stage
+- bytes 4..7: loop task stacked PC, LE u32
+- bytes 8..11: TIMER4 interrupted/running PC, LE u32
+- bytes 12..15: USBD task stacked PC, LE u32
+- bytes 16..17: USBD task free stack words, LE u16
+- bytes 18..19: loop task free stack words, LE u16
+- bytes 20..21: polls/s, LE u16
+- bytes 22..23: relay/s, LE u16
+- bytes 24..27: last healthy-vitals `millis()`, LE u32
+- bytes 28..31: USBD event/NVIC bitmap, LE u32
+- bytes 32..35: `NRF_USBD->INTEN`, LE u32
+- bytes 36..39: `NRF_USBD->EPDATASTATUS`, LE u32
+- bytes 40..43: `EPINEN<<16 | EPOUTEN`, LE u32

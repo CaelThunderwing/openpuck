@@ -747,6 +747,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						    !USBDevice.suspended()) {
 							// clean detach + reboot into the new mode (releases any held
 							// input on the outgoing device -- see modeSwitchReboot)
+							// Diagnostic: C0mm = chord detector requested mode mm.
+							faultDiagUsbBootTrace((uint16_t)(0xC000u | want));
+
+							// C0xx is a persistence milestone. Commit it before the MCU reset.
+							faultDiagUsbBootTraceTask();
+							faultDiagTrace(FR_SAVE, (uint16_t)(0xC000u | want));
 							modeSwitchReboot(want);
 						}
 					} else {

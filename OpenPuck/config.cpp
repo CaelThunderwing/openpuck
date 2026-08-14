@@ -1,4 +1,5 @@
 #include "config.h"
+#include "fault_diag.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
 #include <Adafruit_LittleFS.h>
@@ -251,6 +252,7 @@ void factoryResetOnce(const char *buildTag)
 	}
 	if (strncmp(tag, buildTag, sizeof tag - 1) == 0)
 		return; // this build already did its one-time reset -> persist
+	faultDiagMarkDestructive(3);
 	factoryErase(); // wipe cfg.bin + bonds.bin + the old tag
 	InternalFS.begin(); // remount the fresh FS
 	File g(InternalFS); // stamp the tag so subsequent boots skip the wipe

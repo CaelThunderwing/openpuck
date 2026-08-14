@@ -24,11 +24,17 @@ void serialConsolePoll()
 		char c = Serial.read();
 		if (c == '\n' || c == '\r') {
 			line[li] = 0;
+			if (!strcmp(line, "K")) {
+			    faultDiagDumpLoopStack();
+			    li = 0;
+			    continue;
+			}
 			// FULL factory wipe -- requires the exact word "ERASE-ALL" so it can't be fat-fingered. Reformats the
 			// internal FS (cfg.bin + bonds.bin gone), reboots into clean defaults; controller must be re-paired.
 			if (!strcmp(line, "ERASE-ALL")) {
 				Serial.println(
 					"# ERASING ALL persistent storage (config + bonds)...");
+				faultDiagMarkDestructive(2);
 				factoryErase();
 				Serial.println(
 					"# done -- rebooting into clean defaults; re-pair the controller");

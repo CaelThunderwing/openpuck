@@ -37,6 +37,10 @@ void faultDiagBoot();
 // the next boot classifies it as RR_REBOOT, not RR_HARDFAULT.
 void faultDiagArmIntentionalReset();
 
+// Persistent destructive-storage breadcrumb mask stored outside InternalFS.
+void faultDiagMarkDestructive(uint8_t code);
+uint8_t faultDiagDestructiveMask();
+
 // One-shot Xbox cold-boot recovery marker. Distinct from the generic
 // intentional-reset marker so setup() can suppress exactly one recovery cycle.
 void faultDiagArmXbox360RecoveryReset();
@@ -72,6 +76,75 @@ void faultDiagArmHangCapture();
 // PCs + vitals to a reserved flash page (survives ANY reset, incl. boards that wipe .noinit/GPREGRET2).
 // Reported + consumed by faultDiagBoot on the next boot. Arm once from setup(), after the WDT starts.
 void faultDiagBlackBoxArm();
+
+// Dynamic USB re-enumeration phase breadcrumb.
+// RAM-only while healthy; TIMER4 persists it only during a real wedge.
+//
+// 0 outside usbReenumerate()
+// 1 entered
+// 2 detach returned; delay(20) has not returned
+// 3 delay returned
+// 4 clearConfiguration returned / rebuild in progress
+// 5 attach returned
+void faultDiagUsbReenumPhase(uint8_t phase);
+
+// Read-only copy of the auxiliary scheduler/re-enumeration snapshot.
+// Returns false unless the BSS1 commit magic is present.
+// out[0..5] = reenumPhase, RTC1, reserved, rtcState, cpuMask, ICSR.
+bool faultDiagBssSnapshot(uint32_t out[6]);
+
+// Read-only mode-independent persistent MCU boot history.
+// Oldest retained record is rec[0], newest is rec[count-1].
+struct FaultBootHistRec {
+        uint32_t seq;
+        uint32_t resetReas;
+        uint8_t mode;
+        uint8_t reason;
+        uint8_t gpregret2;
+        uint8_t reserved;
+        uint32_t faultPC;
+        uint32_t faultLR;
+        uint32_t faultCFSR;
+        uint32_t faultHFSR;
+};
+
+struct FaultBootHistSnapshot {
+        uint8_t valid;
+        uint8_t version;
+        uint8_t count;
+        uint8_t reserved;
+        uint32_t generation;
+        uint32_t nextSeq;
+        FaultBootHistRec rec[8];
+};
+
+bool faultDiagBootHistSnapshot(struct FaultBootHistSnapshot *out);
+// Read-only snapshot of the most recent persistent flash black-box record.
+// This NEVER erases flash, stamps the seen marker, or changes the record lifecycle.
+struct FaultBlackBox {
+        uint8_t valid;
+        uint8_t version;
+        uint8_t stage;
+        uint8_t usbdRegsReadable;
+        uint32_t loopPC;
+        uint32_t irqPC;
+        uint32_t usbdPC;
+        uint16_t usbdStackFree;
+        uint16_t loopStackFree;
+        uint16_t pollsps;
+        uint16_t relayps;
+        uint32_t wedgeMs;
+        uint32_t usbdEvents;
+        uint32_t usbdInten;
+        uint32_t epDataStatus;
+        uint32_t epEnable;
+};
+bool faultDiagBlackBoxSnapshot(struct FaultBlackBox *out);
+
+uint8_t faultDiagBbTimerMaxStuck();
+uint8_t faultDiagBbTimerIrqTicks();
+uint8_t faultDiagBbTimerFlags();
+uint8_t faultDiagBbTimerBeatChanges();
 uint32_t faultDiagHangPC();
 uint32_t faultDiagHangLR();
 
@@ -80,6 +153,24 @@ uint32_t faultDiagHangLR();
 void faultDiagStackTick();
 uint16_t faultDiagUsbdStackFree();
 uint16_t faultDiagLoopStackFree();
+
+// Diagnostic snapshot of the Arduino loop task stack.
+// Prints stack base, saved TCB SP, HWM and the actual 0xA5 fill pattern.
+// Read-only; intended for the serial-console K command.
+void faultDiagDumpLoopStack();
+
+// Compact loop-stack snapshot for WebUSB diagnostics.
+// raw[] is the low 128 bytes of the loop task's stack allocation.
+struct FaultDiagStackMap {
+    uint32_t base;
+    uint32_t sp;
+    uint16_t hwm;
+    uint16_t prefix;
+    uint16_t laterA5;
+    uint16_t stackBytes;
+    uint8_t raw[128];
+};
+bool faultDiagCaptureLoopStack(FaultDiagStackMap *out);
 // Last-boot classification (RR_*) + the raw RESETREAS, for the WebUSB panel / console.
 uint8_t faultDiagReason();
 uint32_t faultDiagResetReas();

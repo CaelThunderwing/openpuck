@@ -36,7 +36,7 @@ struct HangFrame {
 __attribute__((section(".noinit"))) volatile struct HangFrame g_hangFrame;
 static uint32_t g_reportHangPC = 0, g_reportHangLR = 0;
 
-__attribute__((naked)) void WDT_IRQHandler(void)
+extern "C" __attribute__((naked)) void WDT_IRQHandler(void)
 {
 	__asm volatile(
 		"tst lr, #4            \n" // EXC_RETURN bit2: 0=frame on MSP, 1=on PSP
@@ -92,12 +92,108 @@ static const char *const REASON_STR[RR_COUNT] = {
 // than an intentional reboot. The core's strong symbol is only linked to satisfy the vector table, so our own
 // strong definition takes its place. Keep this MINIMAL: we are in fault context on a possibly-corrupt stack --
 // no Serial, no allocations, just stamp and reset.
-extern "C" void HardFault_Handler(void)
+extern "C" __attribute__((naked)) void HardFault_Handler(void)
 {
-	NRF_POWER->GPREGRET2 = G2_FAULT;
-	NVIC_SystemReset();
-	while (1) {
-	}
+        __asm volatile(
+                // Select the exception frame.
+                "tst lr, #4                \n"
+                "ite eq                    \n"
+                "mrseq r0, msp             \n"
+                "mrsne r0, psp             \n"
+
+                // Core LR/PC remain at +20/+24 in basic and extended frames.
+
+                // Save evidence in registers; this handler never returns.
+                "ldr r4, [r0, #24]         \n" // PC
+                "ldr r5, [r0, #20]         \n" // LR
+
+                "ldr r0, =0xE000ED28       \n"
+                "ldr r6, [r0]              \n" // CFSR
+                "ldr r0, =0xE000ED2C       \n"
+                "ldr r7, [r0]              \n" // HFSR
+
+                // HFF words 48..52 must ALL still be erased.
+                // If not, preserve the older evidence rather than corrupt it.
+                "ldr r2, =0x000E80C0       \n"
+                "movs r1, #0               \n"
+                "mvns r1, r1               \n" // r1 = 0xFFFFFFFF
+
+                "ldr r0, [r2, #0]          \n"
+                "cmp r0, r1                \n"
+                "bne 9f                    \n"
+                "ldr r0, [r2, #4]          \n"
+                "cmp r0, r1                \n"
+                "bne 9f                    \n"
+                "ldr r0, [r2, #8]          \n"
+                "cmp r0, r1                \n"
+                "bne 9f                    \n"
+                "ldr r0, [r2, #12]         \n"
+                "cmp r0, r1                \n"
+                "bne 9f                    \n"
+                "ldr r0, [r2, #16]         \n"
+                "cmp r0, r1                \n"
+                "bne 9f                    \n"
+
+                // NVMC CONFIG = write-enable.
+                "ldr r0, =0x4001E504       \n"
+                "movs r1, #1               \n"
+                "str r1, [r0]              \n"
+                "dsb                        \n"
+
+                // NVMC READY.
+                "ldr r3, =0x4001E400       \n"
+
+                // word 49 = PC
+                "str r4, [r2, #4]          \n"
+                "1: ldr r1, [r3]           \n"
+                "cmp r1, #0                \n"
+                "beq 1b                    \n"
+
+                // word 50 = LR
+                "str r5, [r2, #8]          \n"
+                "2: ldr r1, [r3]           \n"
+                "cmp r1, #0                \n"
+                "beq 2b                    \n"
+
+                // word 51 = CFSR
+                "str r6, [r2, #12]         \n"
+                "3: ldr r1, [r3]           \n"
+                "cmp r1, #0                \n"
+                "beq 3b                    \n"
+
+                // word 52 = HFSR
+                "str r7, [r2, #16]         \n"
+                "4: ldr r1, [r3]           \n"
+                "cmp r1, #0                \n"
+                "beq 4b                    \n"
+
+                // Commit HFF1 LAST at word 48.
+                "ldr r1, =0x48464631       \n"
+                "str r1, [r2, #0]          \n"
+                "5: ldr r1, [r3]           \n"
+                "cmp r1, #0                \n"
+                "beq 5b                    \n"
+
+                // Return NVMC to read mode.
+                "movs r1, #0               \n"
+                "str r1, [r0]              \n"
+                "dsb                        \n"
+
+                // Whether flash capture succeeded or the slot was occupied,
+                // retain the existing GPREGRET2 HardFault classification.
+                "9:                         \n"
+                "ldr r2, =0x40000520       \n"
+                "movs r1, #0xFA            \n"
+                "str r1, [r2]              \n"
+
+                // SYSRESETREQ.
+                "dsb                        \n"
+                "ldr r2, =0xE000ED0C       \n"
+                "ldr r1, =0x05FA0004       \n"
+                "str r1, [r2]              \n"
+                "dsb                        \n"
+                "b .                        \n"
+                ".ltorg                    \n");
 }
 
 void faultDiagArmIntentionalReset()
@@ -206,6 +302,10 @@ static const char *frEvtStr(uint8_t e)
 
 // ---- persistent Xbox 360 USB boot trace ------------------------------------------------------------------
 #define X360BT_FILE "/x360boot.bin"
+#define X360BT_FILE_A "/x360bta.bin"
+#define X360BT_FILE_B "/x360btb.bin"
+#define X360BT_TXN_MAGIC 0x58335458u /* "X3TX" */
+
 #define X360BT_MAGIC 0x54423358u // "X3BT"
 #define X360BT_VERSION 1u
 #define X360BT_RING 128u
@@ -216,7 +316,379 @@ struct X360BootFile { uint32_t magic; uint16_t version; uint16_t count; uint32_t
 static X360BootRec g_x360bt[X360BT_RING];
 static volatile uint16_t g_x360btHead = 0, g_x360btCount = 0;
 static volatile uint32_t g_x360btTotal = 0, g_x360btLastMs = 0;
+static volatile uint32_t g_x360btFirstMs = 0;
 static volatile bool g_x360btActive = false, g_x360btDirty = false;
+static bool g_x360btEarlyCommitted = false;
+static volatile bool g_x360btMilestonePending = false;
+static bool g_x360btMilestoneCommitted = false;
+
+// Diagnostic persistence override: while Xbox traffic never becomes quiet,
+// take exactly one early snapshot in each MCU boot. The normal 10 s quiet
+// commit remains available afterward if capture continues, but the early
+// snapshot latches so it cannot churn InternalFS continuously in one boot.
+#define X360BT_EARLY_SNAPSHOT_MS 350u
+
+
+// Dual-slot transactional wrapper for the persistent Xbox boot trace.
+// We never destroy the previously-valid slot before a replacement has been
+// written and verified. A reset during remove/write can therefore damage at
+// most the slot currently being replaced.
+struct X360BootTxn {
+    uint32_t magic;
+    uint32_t generation;
+    X360BootFile payload;
+    uint32_t checksum;
+};
+
+// These InternalFS operations run only from setup()/loop(). USB/ISR callers
+// append to g_x360bt but never enter the transaction helpers, so fixed
+// file-scope workspaces avoid multi-kilobyte loop-stack frames safely.
+static X360BootFile g_x360FileScratch;
+static X360BootTxn g_x360TxnScratch;
+
+static uint32_t x360TxnChecksum(const X360BootTxn &t)
+{
+    // FNV-1a over generation + payload. The wrapper is memset(0) before use,
+    // so any padding inside X360BootFile is deterministic on write/read.
+    const uint8_t *b = (const uint8_t *)&t.generation;
+    const size_t n = sizeof(t.generation) + sizeof(t.payload);
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; ++i) {
+        h ^= b[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool x360TxnRead(const char *path, X360BootTxn &out)
+{
+    File f(InternalFS);
+    if (!f.open(path, FILE_O_READ))
+        return false;
+    memset(&out, 0, sizeof out);
+    int got = f.read((uint8_t *)&out, sizeof out);
+    f.close();
+    if (got != (int)sizeof out)
+        return false;
+    if (out.magic != X360BT_TXN_MAGIC)
+        return false;
+    if (out.payload.magic != X360BT_MAGIC ||
+        out.payload.version != X360BT_VERSION ||
+        out.payload.count > X360BT_RING)
+        return false;
+    return out.checksum == x360TxnChecksum(out);
+}
+
+static bool x360TxnProbe(const char *path, uint32_t &generation)
+{
+    if (!x360TxnRead(path, g_x360TxnScratch))
+        return false;
+    generation = g_x360TxnScratch.generation;
+    return true;
+}
+
+static const char *x360TxnNewestPath(uint32_t &generation)
+{
+    uint32_t ga = 0, gb = 0;
+    bool va = x360TxnProbe(X360BT_FILE_A, ga);
+    bool vb = x360TxnProbe(X360BT_FILE_B, gb);
+    if (!va && !vb) {
+        generation = 0;
+        return NULL;
+    }
+    if (va && (!vb || ga >= gb)) {
+        generation = ga;
+        return X360BT_FILE_A;
+    }
+    generation = gb;
+    return X360BT_FILE_B;
+}
+
+static bool x360TxnCommit(const X360BootFile &payload)
+{
+    uint32_t ga = 0, gb = 0;
+    bool va = x360TxnProbe(X360BT_FILE_A, ga);
+    bool vb = x360TxnProbe(X360BT_FILE_B, gb);
+
+    uint32_t newest = 0;
+    if (va && ga > newest) newest = ga;
+    if (vb && gb > newest) newest = gb;
+
+    // Replace the older/invalid slot. The other valid slot is never touched.
+    const char *target;
+    if (!va)
+        target = X360BT_FILE_A;
+    else if (!vb)
+        target = X360BT_FILE_B;
+    else
+        target = (ga <= gb) ? X360BT_FILE_A : X360BT_FILE_B;
+
+    X360BootTxn &tx = g_x360TxnScratch;
+    memset(&tx, 0, sizeof tx);
+    tx.magic = X360BT_TXN_MAGIC;
+    tx.generation = newest + 1u;
+    if (tx.generation == 0) tx.generation = 1u;
+    tx.payload = payload;
+    tx.checksum = x360TxnChecksum(tx);
+
+    const uint32_t expectedGeneration = tx.generation;
+    const uint32_t expectedChecksum = tx.checksum;
+
+    // Safe because the other slot still contains the previous valid record.
+    InternalFS.remove(target);
+    File f(InternalFS);
+    if (!f.open(target, FILE_O_WRITE))
+        return false;
+    int wrote = f.write((const uint8_t *)&tx, sizeof tx);
+    f.close();
+    if (wrote != (int)sizeof tx)
+        return false;
+
+    // Verify from storage before declaring the snapshot committed.
+    if (!x360TxnRead(target, tx))
+        return false;
+    return tx.generation == expectedGeneration &&
+           tx.checksum == expectedChecksum;
+}
+
+
+// ---- mode-independent persistent MCU boot history --------------------------------
+//
+// Unlike the X360 USB trace, this recorder is active in EVERY USB mode.
+// It preserves the actual sequence of MCU boots across a failure followed
+// by any necessary replug/mode-recovery steps.
+//
+// Two transactional InternalFS files are alternated. A new write never
+// destroys the newest previously-valid copy before its replacement verifies.
+
+#define BOOTHIST_MAGIC       0x3148424Fu  // "OBH1"
+#define BOOTHIST_TXN_MAGIC   0x31544842u  // "BHT1"
+#define BOOTHIST_VERSION     2u
+#define BOOTHIST_RING        8u
+#define BOOTHIST_FILE_A      "/opk_bhist_a.bin"
+#define BOOTHIST_FILE_B      "/opk_bhist_b.bin"
+
+struct BootHistRec {
+    uint32_t seq;
+    uint32_t resetReas;
+    uint8_t mode;
+    uint8_t reason;
+    uint8_t gpregret2;
+    uint8_t reserved;
+    uint32_t faultPC;
+    uint32_t faultLR;
+    uint32_t faultCFSR;
+    uint32_t faultHFSR;
+};
+
+struct BootHistFile {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t count;
+    uint32_t nextSeq;
+    BootHistRec rec[BOOTHIST_RING];
+};
+
+struct BootHistTxn {
+    uint32_t magic;
+    uint32_t generation;
+    BootHistFile payload;
+    uint32_t checksum;
+};
+
+static uint32_t bootHistChecksum(const BootHistTxn &tx)
+{
+    const uint8_t *b = (const uint8_t *)&tx;
+    const size_t n = offsetof(BootHistTxn, checksum);
+
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; ++i) {
+        h ^= b[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool bootHistRead(const char *path, BootHistTxn &tx)
+{
+    File f(InternalFS);
+    if (!f.open(path, FILE_O_READ))
+        return false;
+
+    memset(&tx, 0, sizeof tx);
+    int got = f.read((uint8_t *)&tx, sizeof tx);
+    f.close();
+
+    if (got != (int)sizeof tx ||
+        tx.magic != BOOTHIST_TXN_MAGIC ||
+        tx.payload.magic != BOOTHIST_MAGIC ||
+        tx.payload.version != BOOTHIST_VERSION ||
+        tx.payload.count > BOOTHIST_RING)
+        return false;
+
+    return tx.checksum == bootHistChecksum(tx);
+}
+
+static bool bootHistProbe(const char *path, uint32_t &generation)
+{
+    BootHistTxn tx;
+    if (!bootHistRead(path, tx))
+        return false;
+
+    generation = tx.generation;
+    return true;
+}
+
+static bool bootHistNewest(BootHistFile &out, uint32_t &generation)
+{
+    BootHistTxn a, b;
+    bool va = bootHistRead(BOOTHIST_FILE_A, a);
+    bool vb = bootHistRead(BOOTHIST_FILE_B, b);
+
+    if (!va && !vb) {
+        generation = 0;
+        return false;
+    }
+
+    const BootHistTxn *best =
+        (va && (!vb || a.generation >= b.generation)) ? &a : &b;
+
+    out = best->payload;
+    generation = best->generation;
+    return true;
+}
+
+static bool bootHistCommit(const BootHistFile &payload)
+{
+    uint32_t ga = 0, gb = 0;
+    bool va = bootHistProbe(BOOTHIST_FILE_A, ga);
+    bool vb = bootHistProbe(BOOTHIST_FILE_B, gb);
+
+    uint32_t newest = 0;
+    if (va && ga > newest)
+        newest = ga;
+    if (vb && gb > newest)
+        newest = gb;
+
+    const char *target;
+    if (!va)
+        target = BOOTHIST_FILE_A;
+    else if (!vb)
+        target = BOOTHIST_FILE_B;
+    else
+        target = (ga <= gb) ? BOOTHIST_FILE_A : BOOTHIST_FILE_B;
+
+    BootHistTxn tx;
+    memset(&tx, 0, sizeof tx);
+    tx.magic = BOOTHIST_TXN_MAGIC;
+    tx.generation = newest + 1u;
+    if (tx.generation == 0)
+        tx.generation = 1u;
+    tx.payload = payload;
+    tx.checksum = bootHistChecksum(tx);
+
+    InternalFS.remove(target);
+
+    File f(InternalFS);
+    if (!f.open(target, FILE_O_WRITE))
+        return false;
+
+    int wrote = f.write((const uint8_t *)&tx, sizeof tx);
+    f.close();
+
+    if (wrote != (int)sizeof tx)
+        return false;
+
+    BootHistTxn verify;
+    return bootHistRead(target, verify) &&
+           verify.generation == tx.generation &&
+           verify.checksum == tx.checksum;
+}
+
+static bool bootHistRecord(uint8_t mode,
+                           uint8_t reason,
+                           uint32_t resetReas,
+                           uint8_t gpregret2,
+                           const uint32_t *flashFault)
+{
+    BootHistFile h;
+    uint32_t generation = 0;
+
+    if (!bootHistNewest(h, generation)) {
+        memset(&h, 0, sizeof h);
+        h.magic = BOOTHIST_MAGIC;
+        h.version = BOOTHIST_VERSION;
+        h.nextSeq = 1;
+    }
+
+    if (h.nextSeq == 0)
+        h.nextSeq = 1;
+
+    BootHistRec r;
+    memset(&r, 0, sizeof r);
+    r.seq = h.nextSeq++;
+    r.resetReas = resetReas;
+    r.mode = mode;
+    r.reason = reason;
+    r.gpregret2 = gpregret2;
+
+    // Raw flash is authoritative across reset/startup.
+    if (flashFault) {
+        r.faultPC = flashFault[0];
+        r.faultLR = flashFault[1];
+        r.faultCFSR = flashFault[2];
+        r.faultHFSR = flashFault[3];
+    }
+
+    if (h.count < BOOTHIST_RING) {
+        h.rec[h.count++] = r;
+    } else {
+        for (unsigned i = 1; i < BOOTHIST_RING; ++i)
+            h.rec[i - 1] = h.rec[i];
+        h.rec[BOOTHIST_RING - 1] = r;
+    }
+
+    // Failure does not alter normal boot behavior. The caller uses this
+    // result solely to decide whether the raw HFF1 record may be recycled.
+    return bootHistCommit(h);
+}
+
+
+bool faultDiagBootHistSnapshot(struct FaultBootHistSnapshot *out)
+{
+    if (!out)
+        return false;
+
+    memset(out, 0, sizeof *out);
+    out->version = BOOTHIST_VERSION;
+
+    BootHistFile h;
+    uint32_t generation = 0;
+
+    if (!bootHistNewest(h, generation))
+        return false;
+
+    out->valid = 1;
+    out->count = (uint8_t)h.count;
+    out->generation = generation;
+    out->nextSeq = h.nextSeq;
+
+    for (uint8_t i = 0; i < out->count && i < BOOTHIST_RING; ++i) {
+        out->rec[i].seq = h.rec[i].seq;
+        out->rec[i].resetReas = h.rec[i].resetReas;
+        out->rec[i].mode = h.rec[i].mode;
+        out->rec[i].reason = h.rec[i].reason;
+        out->rec[i].gpregret2 = h.rec[i].gpregret2;
+        out->rec[i].reserved = h.rec[i].reserved;
+        out->rec[i].faultPC = h.rec[i].faultPC;
+        out->rec[i].faultLR = h.rec[i].faultLR;
+        out->rec[i].faultCFSR = h.rec[i].faultCFSR;
+        out->rec[i].faultHFSR = h.rec[i].faultHFSR;
+    }
+
+    return true;
+}
+
 
 void faultDiagUsbBootTraceBegin(bool capture)
 {
@@ -230,6 +702,10 @@ void faultDiagUsbBootTraceBegin(bool capture)
     g_x360btHead = g_x360btCount = 0;
     g_x360btTotal = 0;
     g_x360btLastMs = 0;
+    g_x360btFirstMs = 0;
+    g_x360btEarlyCommitted = false;
+    g_x360btMilestonePending = false;
+    g_x360btMilestoneCommitted = false;
 }
 
 void faultDiagUsbBootTrace(uint16_t arg)
@@ -241,36 +717,120 @@ void faultDiagUsbBootTrace(uint16_t arg)
     g_x360btHead = (uint16_t)((h + 1u) % X360BT_RING);
     if (g_x360btCount < X360BT_RING) g_x360btCount++;
     if (g_x360btTotal != 0xFFFFFFFFu) g_x360btTotal++;
+    if (g_x360btFirstMs == 0) g_x360btFirstMs = g_x360bt[h].ms ? g_x360bt[h].ms : 1u;
     g_x360btLastMs = g_x360bt[h].ms; g_x360btDirty = true;
+    if (arg == 0x00B6u && !g_x360btMilestoneCommitted)
+        g_x360btMilestonePending = true;
+
+    // C0xx is immediately followed by an MCU mode-switch reset. Force a new
+    // transactional milestone even if an earlier B6 milestone already committed.
+    if ((arg & 0xFF00u) == 0xC000u) {
+        g_x360btMilestoneCommitted = false;
+        g_x360btMilestonePending = true;
+    }
     if (!pm) __enable_irq();
 }
 
 void faultDiagUsbBootTraceTask(void)
 {
     if (!g_x360btActive || !g_x360btDirty) return;
+
     uint32_t now = millis();
-    if ((uint32_t)(now - g_x360btLastMs) < X360BT_QUIET_MS) return;
-    X360BootFile out; memset(&out, 0, sizeof out); out.magic = X360BT_MAGIC; out.version = X360BT_VERSION;
-    uint32_t pm = __get_PRIMASK(); __disable_irq();
-    uint16_t cnt = g_x360btCount; uint16_t start = (uint16_t)((g_x360btHead + X360BT_RING - cnt) % X360BT_RING);
-    out.count = cnt; out.total = g_x360btTotal;
-    for (uint16_t i=0;i<cnt;i++) out.rec[i] = g_x360bt[(start+i)%X360BT_RING];
-    g_x360btDirty = false;
+    bool early = !g_x360btEarlyCommitted && g_x360btFirstMs &&
+                 (uint32_t)(now - g_x360btFirstMs) >= X360BT_EARLY_SNAPSHOT_MS;
+    bool quiet = (uint32_t)(now - g_x360btLastMs) >= X360BT_QUIET_MS;
+    bool milestone = g_x360btMilestonePending && !g_x360btMilestoneCommitted;
+    if (!early && !quiet && !milestone) return;
+
+    // If an early write fails, retry at a bounded cadence rather than on every
+    // loop iteration. This protects flash while still allowing transient FS
+    // failures to recover within the same MCU boot.
+    static uint32_t lastAttemptMs = 0;
+    static uint8_t earlyAttempts = 0;
+    if (early && !quiet && !milestone) {
+        if (earlyAttempts >= 3u) return;
+        if (lastAttemptMs && (uint32_t)(now - lastAttemptMs) < 250u) return;
+        lastAttemptMs = now;
+        earlyAttempts++;
+    }
+
+    X360BootFile &out = g_x360FileScratch;
+    memset(&out, 0, sizeof out);
+    out.magic = X360BT_MAGIC;
+    out.version = X360BT_VERSION;
+
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    uint16_t cnt = g_x360btCount;
+    uint16_t start = (uint16_t)((g_x360btHead + X360BT_RING - cnt) % X360BT_RING);
+    out.count = cnt;
+    out.total = g_x360btTotal;
+    for (uint16_t i = 0; i < cnt; i++)
+        out.rec[i] = g_x360bt[(start + i) % X360BT_RING];
     if (!pm) __enable_irq();
-    InternalFS.remove(X360BT_FILE); File f(InternalFS);
-    if (f.open(X360BT_FILE, FILE_O_WRITE)) { f.write((const uint8_t *)&out, sizeof out); f.close(); }
+
+    bool committed = x360TxnCommit(out);
+    if (!committed)
+        return;
+
+    // Latch only AFTER verified persistence.
+    if (early)
+        g_x360btEarlyCommitted = true;
+    if (milestone) {
+        g_x360btMilestoneCommitted = true;
+        g_x360btMilestonePending = false;
+    }
+    if (quiet)
+        g_x360btDirty = false;
 }
 
 static void x360BootTraceLoadIntoFlight(void)
 {
-    if (g_usbMode == MODE_XBOX360_CONSOLE) return;
-    File f(InternalFS); if (!f.open(X360BT_FILE, FILE_O_READ)) return;
-    X360BootFile in; int got=f.read((uint8_t *)&in, sizeof in); f.close();
-    if (got < 12 || in.magic != X360BT_MAGIC || in.version != X360BT_VERSION || in.count > X360BT_RING) return;
-    memset(&g_flightSaved,0,sizeof g_flightSaved); g_flightSaved.magic=FR_MAGIC;
-    uint16_t n=in.count<FR_RING?in.count:(uint16_t)FR_RING; uint16_t src0=(uint16_t)(in.count-n);
-    for(uint16_t i=0;i<n;i++){ const X360BootRec &r=in.rec[src0+i]; g_flightSaved.ring[i].ms=r.ms; g_flightSaved.ring[i].arg=r.arg; g_flightSaved.ring[i].evt=FR_SAVE; g_flightSaved.ring[i].stage=r.stage; }
-    g_flightSaved.head=n%FR_RING; g_flightSaved.count=(uint16_t)(in.total>0xFFFFu?0xFFFFu:in.total); g_haveSaved=true;
+    X360BootFile &in = g_x360FileScratch;
+    bool have = false;
+
+    uint32_t gen = 0;
+    const char *newest = x360TxnNewestPath(gen);
+    if (newest) {
+        X360BootTxn &tx = g_x360TxnScratch;
+        if (x360TxnRead(newest, tx)) {
+            in = tx.payload;
+            have = true;
+        }
+    }
+
+    // Migration/read fallback for traces created by older firmware.
+    if (!have) {
+        File f(InternalFS);
+        if (f.open(X360BT_FILE, FILE_O_READ)) {
+            memset(&in, 0, sizeof in);
+            int got = f.read((uint8_t *)&in, sizeof in);
+            f.close();
+            have = got >= 12 &&
+                   in.magic == X360BT_MAGIC &&
+                   in.version == X360BT_VERSION &&
+                   in.count <= X360BT_RING;
+        }
+    }
+
+    if (!have)
+        return;
+
+    memset(&g_flightSaved, 0, sizeof g_flightSaved);
+    g_flightSaved.magic = FR_MAGIC;
+    uint16_t n = in.count < FR_RING ? in.count : (uint16_t)FR_RING;
+    uint16_t src0 = (uint16_t)(in.count - n);
+    for (uint16_t i = 0; i < n; i++) {
+        const X360BootRec &r = in.rec[src0 + i];
+        g_flightSaved.ring[i].ms = r.ms;
+        g_flightSaved.ring[i].arg = r.arg;
+        g_flightSaved.ring[i].evt = FR_SAVE;
+        g_flightSaved.ring[i].stage = r.stage;
+    }
+    g_flightSaved.head = n % FR_RING;
+    g_flightSaved.count =
+        (uint16_t)(in.total > 0xFFFFu ? 0xFFFFu : in.total);
+    g_haveSaved = true;
 }
 
 // ---- flash black box (pre-watchdog dump) -------------------------------------------------------------------
@@ -288,6 +848,80 @@ static void x360BootTraceLoadIntoFlight(void)
 	0xE8000UL // raw page: app image (~170 KB, ends < 0x60000) < here < InternalFS (0xED000)
 #define BB_MAGIC 0x62627831u // "bbx1"
 #define BB_WORDS 12
+#define BB_DESTRUCT_MAGIC_ADDR (BB_ADDR + 4u * 13u)
+#define BB_DESTRUCT_MAGIC      0x44535431u /* DST1 */
+#define BB_DESTRUCT_ADDR       (BB_ADDR + 4u * 15u)
+#define BB_DESTRUCT_BITS       0x0000000Fu
+#define BBT_MAGIC 0x42545431u /* BTT1 */
+
+// Auxiliary scheduler / re-enumeration snapshot.
+//
+// Existing BB-page ownership:
+//   words 0..11 = normal black box
+//   word 12     = seen marker
+//   word 13     = destructive magic
+//   word 15     = destructive bits
+//
+// Keep the independent snapshot well away at word 32.
+#define BBS_WORD_BASE 32u
+#define BBS_MAGIC     0x42535331u /* "BSS1" */
+
+// Independent HardFault record in the already-reserved BB page.
+//
+//   word 48 = HFF1 commit magic -- written LAST
+//   word 49 = stacked PC
+//   word 50 = stacked LR
+//   word 51 = CFSR
+//   word 52 = HFSR
+//
+// A valid HFF1 record survives unrelated bbErase() operations until
+// boot history has transactionally persisted it.
+#define BBHF_WORD_BASE   48u
+#define BBHF_MAGIC       0x48464631u /* "HFF1" */
+#define BBHF_MAGIC_ADDR  (BB_ADDR + 4u * BBHF_WORD_BASE)
+
+struct BbTimerTrail {
+    uint32_t magic;
+    uint32_t irqTicks;
+    uint32_t beatChanges;
+    uint16_t maxStuck;
+    uint16_t flags;
+};
+__attribute__((section(".noinit"))) static volatile struct BbTimerTrail g_bbTimerTrail;
+static uint8_t g_bbReportMaxStuck;
+static uint8_t g_bbReportIrqTicks;
+static uint8_t g_bbReportFlags;
+static uint8_t g_bbReportBeatChanges;
+uint8_t faultDiagBbTimerMaxStuck() { return g_bbReportMaxStuck; }
+uint8_t faultDiagBbTimerIrqTicks() { return g_bbReportIrqTicks; }
+uint8_t faultDiagBbTimerFlags() { return g_bbReportFlags; }
+uint8_t faultDiagBbTimerBeatChanges() { return g_bbReportBeatChanges; }
+
+static volatile uint8_t g_usbReenumPhase = 0;
+
+void faultDiagUsbReenumPhase(uint8_t phase)
+{
+        g_usbReenumPhase = phase;
+}
+
+bool faultDiagBssSnapshot(uint32_t out[6])
+{
+        if (!out)
+                return false;
+
+        const volatile uint32_t *bs =
+                (const volatile uint32_t *)(BB_ADDR +
+                                            4u * BBS_WORD_BASE);
+
+        if (bs[0] != BBS_MAGIC)
+                return false;
+
+        for (int i = 0; i < 6; ++i)
+                out[i] = bs[1 + i];
+
+        return true;
+}
+
 static TaskHandle_t g_hLoop,
 	g_hUsbd; // captured by faultDiagStackTick's 1 Hz sweep
 // non-static (like g_hangFrame): the naked ISR's `ldr =symbol` needs external linkage to resolve
@@ -309,6 +943,31 @@ static void bbFlashWord(uint32_t addr, uint32_t v)
 	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
 	__DMB();
 }
+
+void faultDiagMarkDestructive(uint8_t code)
+{
+    if (code < 1u || code > 4u)
+        return;
+
+    if (*(volatile const uint32_t *)BB_DESTRUCT_MAGIC_ADDR != BB_DESTRUCT_MAGIC) {
+        bbErase();
+        bbFlashWord(BB_DESTRUCT_MAGIC_ADDR, BB_DESTRUCT_MAGIC);
+    }
+
+    uint32_t cur = *(volatile const uint32_t *)BB_DESTRUCT_ADDR;
+    uint32_t next = cur & ~(1u << (code - 1u));
+    if (next != cur)
+        bbFlashWord(BB_DESTRUCT_ADDR, next);
+}
+
+uint8_t faultDiagDestructiveMask()
+{
+    if (*(volatile const uint32_t *)BB_DESTRUCT_MAGIC_ADDR != BB_DESTRUCT_MAGIC)
+        return 0;
+    uint32_t v = *(volatile const uint32_t *)BB_DESTRUCT_ADDR;
+    return (uint8_t)((~v) & BB_DESTRUCT_BITS);
+}
+
 // Stacked PC/LR of a BLOCKED FreeRTOS task. pxTopOfStack is the first TCB member (portable-layer invariant);
 // the CM4F PendSV push order is [r4-r11, EXC_RETURN] then (s16-s31 iff the FPU frame was live) then the
 // hardware frame [r0-r3, r12, lr, pc, xpsr]. EXC_RETURN bit4 = 0 means the FPU frame is present.
@@ -329,6 +988,8 @@ static void bbTaskPc(TaskHandle_t h, uint32_t *pc, uint32_t *lr)
 extern "C" void bbTimerBody(void)
 {
 	NRF_TIMER4->EVENTS_COMPARE[0] = 0;
+	if (g_bbTimerTrail.magic == BBT_MAGIC)
+	        g_bbTimerTrail.irqTicks++;
 	(void)NRF_TIMER4->EVENTS_COMPARE[0]; // readback: event write is posted
 	static uint32_t lastBeat;
 	static uint16_t stuck;
@@ -337,11 +998,20 @@ extern "C" void bbTimerBody(void)
 	if (b != lastBeat) {
 		lastBeat = b;
 		stuck = 0;
+		if (g_bbTimerTrail.magic == BBT_MAGIC)
+		        g_bbTimerTrail.beatChanges++;
 		return;
 	}
 	if (dumped)
 		return;
-	if (++stuck <
+	++stuck;
+	if (g_bbTimerTrail.magic == BBT_MAGIC) {
+	        if (stuck > g_bbTimerTrail.maxStuck)
+	                g_bbTimerTrail.maxStuck = stuck;
+	        if (stuck >= 2)
+	                g_bbTimerTrail.flags |= 0x02u;
+	}
+	if (stuck <
 	    24) { // 24 ticks @ 4 Hz = 6 s frozen; WDT reset lands at 8 s
 		// USBD self-heal kick before giving up. The black-boxed wedge (2026-07-03, loopPC=start_dma,
 		// usbdPC=idle xQueueReceive) is a USB EasyDMA whose END event/interrupt got swallowed (clone
@@ -360,10 +1030,14 @@ extern "C" void bbTimerBody(void)
 		return;
 	}
 	dumped = true;
+	if (g_bbTimerTrail.magic == BBT_MAGIC)
+	        g_bbTimerTrail.flags |= 0x04u;
 	// Lazy erase: the page still holds the PREVIOUS hang's (already-reported) record -- boot no longer
 	// erases it, so its CDC banner stays re-printable on any later debug boot. An in-ISR page erase is
 	// ~85ms of CPU stall, irrelevant here: the system is already dead and the WDT reset is ~2s away.
 	bbErase();
+	if (g_bbTimerTrail.magic == BBT_MAGIC)
+	        g_bbTimerTrail.flags |= 0x08u;
 	// Record v2, written in TWO PHASES: phase 1 (PCs + vitals) commits BEFORE any USBD register is
 	// touched -- if the USBD peripheral has wedged the AHB matrix, reading its registers could bus-stall
 	// this ISR forever (the WDT still resets: its reset path is hardware, not CPU). A record with phase 1
@@ -386,6 +1060,42 @@ extern "C" void bbTimerBody(void)
 	(void)ulr;
 	for (int i = 0; i < 8; i++)
 		bbFlashWord(BB_ADDR + 4u * i, w1[i]);
+
+    // Independent scheduler / RTC snapshot.
+    //
+    // TIMER4 is NVIC priority 1, above normal FreeRTOS BASEPRI masking.
+    // Capture RTC1 hardware/IRQ state and CPU mask state BEFORE reading
+    // NRF_USBD registers.  Do not call FreeRTOS APIs from priority-1 TIMER4.
+    uint32_t rtcState =
+            (NRF_RTC1->INTENSET & 0x00FFFFFFu) |
+            (NVIC_GetPendingIRQ(RTC1_IRQn) ? 0x40000000u : 0u) |
+            (NVIC_GetEnableIRQ(RTC1_IRQn)  ? 0x80000000u : 0u);
+
+    uint32_t cpuMask =
+            (__get_BASEPRI() & 0xFFu) |
+            ((__get_PRIMASK() & 1u) << 8);
+
+    uint32_t bss[6] = {
+            (uint32_t)g_usbReenumPhase,
+            NRF_RTC1->COUNTER,
+            0xFFFFFFFFu, // reserved: no FreeRTOS API from priority-1 TIMER4
+            rtcState,
+            cpuMask,
+            SCB->ICSR,
+    };
+
+    // Payload first.
+    for (int j = 0; j < 6; j++) {
+            bbFlashWord(
+                    BB_ADDR + 4u * (BBS_WORD_BASE + 1u + (uint32_t)j),
+                    bss[j]);
+    }
+
+    // Commit magic LAST, so a partial write cannot look valid.
+    bbFlashWord(BB_ADDR + 4u * BBS_WORD_BASE, BBS_MAGIC);
+
+if (g_bbTimerTrail.magic == BBT_MAGIC)
+        g_bbTimerTrail.flags |= 0x10u;
 	// phase 2: USBD peripheral state -- did the DMA END event ever latch? are its interrupts enabled?
 	uint32_t endmask = 0;
 	for (int i = 0; i < 8; i++) {
@@ -433,8 +1143,45 @@ extern "C" __attribute__((naked)) void TIMER4_IRQHandler(void)
 		       "b bbTimerBody         \n"
 		       ".ltorg                \n");
 }
+
+bool faultDiagBlackBoxSnapshot(struct FaultBlackBox *out)
+{
+        if (!out)
+                return false;
+
+        memset(out, 0, sizeof *out);
+        const volatile uint32_t *w = (const volatile uint32_t *)BB_ADDR;
+        if (w[0] != BB_MAGIC)
+                return false;
+
+        out->valid = 1;
+        out->version = (uint8_t)(w[1] >> 24);
+        out->stage = (uint8_t)(w[1] >> 16);
+        out->loopPC = w[2];
+        out->irqPC = w[3];
+        out->usbdPC = w[4];
+        out->usbdStackFree = (uint16_t)(w[5] >> 16);
+        out->loopStackFree = (uint16_t)(w[5] & 0xFFFFu);
+        out->pollsps = (uint16_t)(w[6] & 0xFFFFu);
+        out->relayps = (uint16_t)(w[6] >> 16);
+        out->wedgeMs = w[7];
+        out->usbdRegsReadable =
+                !((w[8] == 0xFFFFFFFFu) && (w[9] == 0xFFFFFFFFu));
+        out->usbdEvents = w[8];
+        out->usbdInten = w[9];
+        out->epDataStatus = w[10];
+        out->epEnable = w[11];
+        return true;
+}
+
 void faultDiagBlackBoxArm()
 {
+    g_bbTimerTrail.magic = BBT_MAGIC;
+    g_bbTimerTrail.irqTicks = 0;
+    g_bbTimerTrail.beatChanges = 0;
+    g_bbTimerTrail.maxStuck = 0;
+    g_bbTimerTrail.flags = 0x01u;
+
 	NRF_TIMER4->TASKS_STOP = 1;
 	NRF_TIMER4->MODE = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;
 	NRF_TIMER4->BITMODE = TIMER_BITMODE_BITMODE_32Bit
@@ -452,6 +1199,21 @@ void faultDiagBlackBoxArm()
 }
 static void bbErase()
 {
+    uint32_t destructMagicKeep =
+            *(volatile const uint32_t *)BB_DESTRUCT_MAGIC_ADDR;
+    uint32_t destructKeep =
+            *(volatile const uint32_t *)BB_DESTRUCT_ADDR;
+
+    uint32_t hfKeep[5] = {0, 0, 0, 0, 0};
+    const volatile uint32_t *hf =
+            (const volatile uint32_t *)(BB_ADDR +
+                                        4u * BBHF_WORD_BASE);
+    bool keepHardFault = (hf[0] == BBHF_MAGIC);
+
+    if (keepHardFault) {
+        for (int i = 0; i < 5; ++i)
+            hfKeep[i] = hf[i];
+    }
 	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
 	__DMB();
 	NRF_NVMC->ERASEPAGE = BB_ADDR;
@@ -459,6 +1221,23 @@ static void bbErase()
 	}
 	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
 	__DMB();
+
+    if (destructMagicKeep == BB_DESTRUCT_MAGIC) {
+        bbFlashWord(BB_DESTRUCT_MAGIC_ADDR, BB_DESTRUCT_MAGIC);
+        if (destructKeep != 0xFFFFFFFFu)
+            bbFlashWord(BB_DESTRUCT_ADDR, destructKeep);
+    }
+
+    if (keepHardFault) {
+        // Restore payload first; commit magic last.
+        for (int i = 1; i < 5; ++i)
+            bbFlashWord(
+                    BB_ADDR +
+                            4u * (BBHF_WORD_BASE + (uint32_t)i),
+                    hfKeep[i]);
+
+        bbFlashWord(BBHF_MAGIC_ADDR, BBHF_MAGIC);
+    }
 }
 // Boot-side: report the record. Runs from faultDiagBoot AFTER the .noinit hangPC/hangStage recovery, so on
 // boards where those survive the black box only fills the gaps; on RAM-wiping boards it IS the evidence.
@@ -498,6 +1277,31 @@ static void bbBootReport(bool isHang)
 			(unsigned long)(w[5] & 0xFFFF),
 			(unsigned long)(w[6] & 0xFFFF),
 			(unsigned long)(w[6] >> 16), (unsigned long)w[7]);
+		// Independent scheduler / re-enumeration snapshot.
+		const volatile uint32_t *bs =
+		        (const volatile uint32_t *)(BB_ADDR +
+		                                   4u * BBS_WORD_BASE);
+
+		if (bs[0] == BBS_MAGIC) {
+		        uint32_t rs = bs[4];
+		        uint32_t cm = bs[5];
+
+		        Serial.printf(
+		                "#   BSS1: reenumPhase=%lu RTC1=%08lX\n",
+		                (unsigned long)bs[1],
+		                (unsigned long)bs[2]);
+
+		        Serial.printf(
+		                "#   BSS1: RTC1 INTEN=%06lX NVICpend=%u NVICen=%u"
+		                " BASEPRI=%02lX PRIMASK=%u ICSR=%08lX\n",
+		                (unsigned long)(rs & 0x00FFFFFFu),
+		                (unsigned)((rs >> 30) & 1u),
+		                (unsigned)((rs >> 31) & 1u),
+		                (unsigned long)(cm & 0xFFu),
+		                (unsigned)((cm >> 8) & 1u),
+		                (unsigned long)bs[6]);
+		}
+
 		// phase 2 = USBD peripheral state; all-FF here with phase 1 present = reading USBD registers
 		// bus-stalled the dump ISR = the peripheral wedged the AHB matrix (decisive by itself).
 		if (w[8] == 0xFFFFFFFFu && w[9] == 0xFFFFFFFFu)
@@ -536,11 +1340,38 @@ void faultDiagBoot()
 	NRF_POWER->GPREGRET2 = 0; // consume the marker for this boot cycle
 	g_resetReas = rr;
 
+
+	// Read committed raw HardFault evidence before BB-page lifecycle work.
+	const volatile uint32_t *hf =
+	        (const volatile uint32_t *)(BB_ADDR +
+	                                    4u * BBHF_WORD_BASE);
+	bool haveFlashFault = (hf[0] == BBHF_MAGIC);
+	uint32_t flashFault[4] = {0, 0, 0, 0};
+
+	if (haveFlashFault) {
+	        flashFault[0] = hf[1];
+	        flashFault[1] = hf[2];
+	        flashFault[2] = hf[3];
+	        flashFault[3] = hf[4];
+	}
 	// If this boot follows a watchdog/lockup reset and GPREGRET2 holds a stage breadcrumb (0x80|stage), recover
 	// which loop stage was stuck. Only meaningful for hangs -- an intentional reboot/HardFault stamps its own
 	// marker over the breadcrumb, and a clean power-on zeroes it.
 	bool isHang = (rr & POWER_RESETREAS_DOG_Msk) ||
 		      (rr & POWER_RESETREAS_LOCKUP_Msk);
+
+        g_bbReportMaxStuck = 0;
+        g_bbReportIrqTicks = 0;
+        g_bbReportFlags = 0;
+        g_bbReportBeatChanges = 0;
+        if (isHang && g_bbTimerTrail.magic == BBT_MAGIC) {
+                g_bbReportMaxStuck = (uint8_t)(g_bbTimerTrail.maxStuck > 255u ? 255u : g_bbTimerTrail.maxStuck);
+                g_bbReportIrqTicks = (uint8_t)(g_bbTimerTrail.irqTicks > 255u ? 255u : g_bbTimerTrail.irqTicks);
+                g_bbReportFlags = (uint8_t)(g_bbTimerTrail.flags & 0xFFu);
+                g_bbReportBeatChanges = (uint8_t)(g_bbTimerTrail.beatChanges > 255u ? 255u : g_bbTimerTrail.beatChanges);
+        }
+        g_bbTimerTrail.magic = 0;
+
 	if (isHang && (g2 & G2_STAGE_FLAG) && g2 < G2_INTENT)
 		g_hangStage = (uint8_t)(g2 & 0x1Fu);
 	else
@@ -567,9 +1398,9 @@ void faultDiagBoot()
 	else if (rr & POWER_RESETREAS_LOCKUP_Msk)
 		reason = RR_LOCKUP;
 	else if (rr & POWER_RESETREAS_SREQ_Msk)
-		reason = (g2 == G2_FAULT)  ? RR_HARDFAULT :
-			 (g2 == G2_INTENT) ? RR_REBOOT :
-					     RR_SOFT;
+           reason = (g2 == G2_FAULT || haveFlashFault) ? RR_HARDFAULT :
+                    (g2 == G2_INTENT)                  ? RR_REBOOT :
+                                                        RR_SOFT;
 	else if (rr & POWER_RESETREAS_OFF_Msk)
 		reason = RR_WAKE;
 	else if (rr == 0)
@@ -577,6 +1408,22 @@ void faultDiagBoot()
 	else
 		reason = RR_UNKNOWN;
 	g_reason = reason;
+
+	// Preserve this MCU boot independently of the active USB mode.
+	// rr/g2 are the genuine values captured before GPREGRET2 was consumed.
+	bool histCommitted =
+           bootHistRecord(g_usbMode,
+                          reason,
+                          rr,
+                          g2,
+                          haveFlashFault ? flashFault : nullptr);
+
+   if (haveFlashFault && histCommitted) {
+           // Transaction is safely in InternalFS now. Consume HFF1, then
+           // recycle/re-arm the whole shared page for the NEXT HardFault.
+           bbFlashWord(BBHF_MAGIC_ADDR, BBHF_MAGIC & ~1u);
+           bbErase();
+   }
 
 	Serial.printf(
 		"# reset cause: %s (RESETREAS=0x%08lX gpregret2=0x%02X)\n",
@@ -915,6 +1762,165 @@ uint16_t faultDiagLoopStackFree()
 {
 	return g_loopStackMin == 0xFFFF ? 0 : g_loopStackMin;
 }
+
+bool faultDiagCaptureLoopStack(FaultDiagStackMap *out)
+{
+    if (!out || !g_hLoop)
+        return false;
+
+    // TCB member zero is pxTopOfStack on this FreeRTOS port; the existing
+    // black-box task-PC walker relies on the same invariant.
+    uint8_t *sp = (uint8_t *)(*(StackType_t **)g_hLoop);
+
+    // The repo xTaskCreate wrapper raises only the core loop task to
+    // 2048 StackType_t units (8192 bytes); keep this scan synchronized.
+    const uint32_t stackBytes = 2048u * sizeof(StackType_t);
+
+    // Obtain pxStackBase/HWM from FreeRTOS rather than guessing TCB layout
+    // beyond pxTopOfStack.
+    static TaskStatus_t st[12];
+    UBaseType_t n = uxTaskGetSystemState(st, 12, NULL);
+
+    TaskStatus_t *lp = NULL;
+    for (UBaseType_t i = 0; i < n; ++i) {
+        if (st[i].xHandle == g_hLoop ||
+            (st[i].pcTaskName && !strcmp(st[i].pcTaskName, "loop"))) {
+            lp = &st[i];
+            break;
+        }
+    }
+    if (!lp || !lp->pxStackBase)
+        return false;
+
+    uint8_t *base = (uint8_t *)lp->pxStackBase;
+
+    uint32_t prefix = 0;
+    while (prefix < stackBytes && base[prefix] == 0xA5u)
+        ++prefix;
+
+    uint32_t laterA5 = stackBytes;
+    if (prefix < stackBytes) {
+        for (uint32_t i = prefix + 1; i + 16u <= stackBytes; ++i) {
+            bool run = true;
+            for (uint32_t j = 0; j < 16u; ++j) {
+                if (base[i + j] != 0xA5u) {
+                    run = false;
+                    break;
+                }
+            }
+            if (run) {
+                laterA5 = i;
+                break;
+            }
+        }
+    }
+
+    out->base = (uint32_t)base;
+    out->sp = (uint32_t)sp;
+    out->hwm = (uint16_t)lp->usStackHighWaterMark;
+    out->prefix = (uint16_t)(prefix > 0xFFFFu ? 0xFFFFu : prefix);
+    out->laterA5 =
+        (uint16_t)(laterA5 >= stackBytes ? 0xFFFFu : laterA5);
+    out->stackBytes =
+        (uint16_t)(stackBytes > 0xFFFFu ? 0xFFFFu : stackBytes);
+
+    memcpy(out->raw, base, sizeof out->raw);
+    return true;
+}
+
+void faultDiagDumpLoopStack()
+{
+    static TaskStatus_t st[12];
+    UBaseType_t n = uxTaskGetSystemState(st, 12, NULL);
+
+    TaskStatus_t *lp = NULL;
+    for (UBaseType_t i = 0; i < n; i++) {
+        if (!strcmp(st[i].pcTaskName, "loop")) {
+            lp = &st[i];
+            break;
+        }
+    }
+
+    if (!lp) {
+        Serial.println("STACKMAP loop task not found");
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)lp->pxStackBase;
+
+    // pxTopOfStack is TCB member zero on this FreeRTOS build;
+    // bbTaskPc() already relies on the same invariant.
+    uint8_t *sp = (uint8_t *)(*(StackType_t **)lp->xHandle);
+
+    // The repo xTaskCreate wrapper raises only the core loop task to
+    // 2048 StackType_t units (8192 bytes); keep this scan synchronized.
+    const uint32_t stackBytes = 2048u * sizeof(StackType_t);
+
+    uint32_t prefix = 0;
+    while (prefix < stackBytes && base[prefix] == 0xA5u)
+        ++prefix;
+
+    // Find the first later run of 16 untouched A5 bytes.
+    uint32_t laterA5 = stackBytes;
+    if (prefix < stackBytes) {
+        for (uint32_t i = prefix + 1; i + 16u <= stackBytes; ++i) {
+            bool run = true;
+            for (uint32_t j = 0; j < 16u; ++j) {
+                if (base[i + j] != 0xA5u) {
+                    run = false;
+                    break;
+                }
+            }
+            if (run) {
+                laterA5 = i;
+                break;
+            }
+        }
+    }
+
+    Serial.print("STACKMAP base=0x");
+    Serial.print((uint32_t)base, HEX);
+    Serial.print(" sp=0x");
+    Serial.print((uint32_t)sp, HEX);
+    Serial.print(" spoff=");
+
+    if (sp >= base && sp <= base + stackBytes)
+        Serial.print((uint32_t)(sp - base));
+    else
+        Serial.print("OUT");
+
+    Serial.print(" hwm=");
+    Serial.print((uint32_t)lp->usStackHighWaterMark);
+    Serial.print("w prefix=");
+    Serial.print(prefix);
+    Serial.print("B laterA5=");
+
+    if (laterA5 < stackBytes)
+        Serial.print(laterA5);
+    else
+        Serial.print("none");
+
+    Serial.println();
+
+    // Dump the low 128 bytes: this is the region that determines whether
+    // HWM=0 is true contiguous stack use or isolated corruption at the base.
+    for (uint32_t off = 0; off < 128u; off += 16u) {
+        Serial.print("  +");
+        if (off < 0x10) Serial.print("00");
+        else if (off < 0x100) Serial.print("0");
+        Serial.print(off, HEX);
+        Serial.print(":");
+
+        for (uint32_t j = 0; j < 16u; ++j) {
+            uint8_t v = base[off + j];
+            Serial.print(' ');
+            if (v < 0x10) Serial.print('0');
+            Serial.print(v, HEX);
+        }
+        Serial.println();
+    }
+}
+
 
 uint8_t faultDiagReason()
 {

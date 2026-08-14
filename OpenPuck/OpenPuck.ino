@@ -78,9 +78,16 @@ static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 // g_usbToBond must already be built for k connected controllers. Called at boot and by usb_mount's watcher.
 void usbReenumerate(uint8_t k)
 {
+	faultDiagUsbReenumPhase(1);
 	USBDevice.detach();
+
+	faultDiagUsbReenumPhase(2);
 	delay(20);
+
+	faultDiagUsbReenumPhase(3);
 	USBDevice.clearConfiguration();
+
+	faultDiagUsbReenumPhase(4);
 	USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);
 	g_active->usbIdentity(); // clearConfiguration reset VID/PID/strings -- restore them
 	// serial carries the mounted count so the host invalidates its cached config descriptor on a change
@@ -98,6 +105,9 @@ void usbReenumerate(uint8_t k)
 		USBDevice.addInterface(usb_web);
 	USBDevice.setConfigurationAttribute(0x80 | 0x20);
 	USBDevice.attach();
+
+	faultDiagUsbReenumPhase(5);
+	faultDiagUsbReenumPhase(0);
 }
 
 // Persist a new USB personality and reboot into it. The clean DETACH before the reset is the point: a bare
@@ -293,6 +303,37 @@ void setup()
 	// Classify why we (re)booted: distinguishes a watchdog hang from a HardFault from an intentional reboot
 	// (issue #72 -- those are conflated in the field). Surfaced on the WebUSB panel too.
 	faultDiagBoot();
+
+	// X360 RESETREAS boot breadcrumbs.
+	// The persistent Mode-11 USB trace is often the only diagnostic channel that
+	// survives long enough to retrieve after the Xbox repeatedly resets/re-enumerates
+	// the USB device. Stamp every *MCU boot* immediately after faultDiagBoot()
+	// classifies RESETREAS. If the Xbox trace later shows AA -> A1 with no E0..E4
+	// group, that transition happened without an MCU reboot.
+	//
+	//   E0rr = classified faultDiagReason() (low byte)
+	//   E1bb = RESETREAS bits  7..0
+	//   E2bb = RESETREAS bits 15..8
+	//   E3bb = RESETREAS bits 23..16
+	//   E4bb = RESETREAS bits 31..24
+	//
+	// These use the existing X360 boot-trace transport only; no reset behavior,
+	// USB descriptors, XSM3 handling, or flash-write cadence is changed.
+	if (g_usbMode == MODE_XBOX360_CONSOLE) {
+		const uint32_t rr = faultDiagResetReas();
+		faultDiagUsbBootTrace((uint16_t)(0xE000u | faultDiagReason()));
+		faultDiagUsbBootTrace((uint16_t)(0xE100u | ((rr >> 0) & 0xFFu)));
+		faultDiagUsbBootTrace((uint16_t)(0xE200u | ((rr >> 8) & 0xFFu)));
+		faultDiagUsbBootTrace((uint16_t)(0xE300u | ((rr >> 16) & 0xFFu)));
+		faultDiagUsbBootTrace((uint16_t)(0xE400u | ((rr >> 24) & 0xFFu)));
+		const uint8_t destruct = faultDiagDestructiveMask();
+		if (destruct)
+			faultDiagUsbBootTrace((uint16_t)(0xE500u | destruct));
+		faultDiagUsbBootTrace((uint16_t)(0xE600u | faultDiagBbTimerMaxStuck()));
+		faultDiagUsbBootTrace((uint16_t)(0xE700u | faultDiagBbTimerIrqTicks()));
+		faultDiagUsbBootTrace((uint16_t)(0xE800u | faultDiagBbTimerFlags()));
+		faultDiagUsbBootTrace((uint16_t)(0xE900u | faultDiagBbTimerBeatChanges()));
+	}
 	// Clock fingerprint: which crystals/oscillators this (possibly clone) board actually came up on. Surfaced
 	// on the panel so flaky clones can be told apart from the known-good board.
 	clockDiagBoot();
