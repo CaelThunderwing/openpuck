@@ -11,3 +11,7 @@ __pycache__/
 
 # generated build-provenance header (gen_version.sh); never commit
 OpenPuck/git_version.h
+
+# Local diagnostic snapshots and raw forensic captures
+*.pre-*
+/dumps/
