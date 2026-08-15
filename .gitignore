@@ -14,4 +14,5 @@ OpenPuck/git_version.h
 
 # Local diagnostic snapshots and raw forensic captures
 *.pre-*
+*.broken-*
 /dumps/
