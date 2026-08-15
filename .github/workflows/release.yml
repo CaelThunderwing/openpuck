@@ -49,9 +49,6 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install adafruit-nrfutil
-        run: pip install adafruit-nrfutil
-
       - name: Install Adafruit nRF52 core
         run: |
           arduino-cli config init --overwrite
@@ -125,6 +122,11 @@ jobs:
             cp "$f" "release_assets/ReversePuckFirmware-${VERSION}.${ext}"
           done
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
+          (
+            cd release_assets
+            sha256sum ./*.uf2 ./*.hex > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
           ls -la release_assets
 
       - name: Create GitHub Release
@@ -140,13 +142,29 @@ jobs:
             Version: ${{ steps.release_version.outputs.version }}
             Commit: ${{ github.sha }}
 
-            ### Files included:
+            ### Highlights
 
-            - `OpenPuck-*-standard.*` — puck firmware (standard)
-            - `OpenPuck-*-factory-reset.*` — puck firmware (factory reset)
-            - `ReversePuckFirmware-*.*` — reverse-puck firmware (controller emulator)
-            - `.uf2` files for drag-and-drop flashing (BOOT/UF2 drive)
-            - `.hex` files for direct flashing workflows
+            - Original Xbox Controller S console mode (mode 10).
+            - Xbox 360 Console mode (mode 11) with full retail XSM3 authentication.
+            - Mode 11 validated on stock and RGH Xbox 360 consoles without `UsbdSecPatch`.
+            - Hotplug, cold boot, player-ring assignment, digital inputs, analog sticks, stick clicks, rumble, and sustained gameplay validated.
+            - Persistent HardFault, watchdog, boot-history, and USB diagnostics.
+            - Release build pinned to Arduino CLI 1.5.1 and Adafruit nRF52 core 1.7.0.
+
+            ### WebUSB Panel
+
+            The upstream hosted Panel does not contain this fork's mode 10 and mode 11 buttons. Follow the [local WebUSB instructions](https://github.com/${{ github.repository }}/blob/${{ steps.release_version.outputs.version }}/docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally) to use this repository's Panel.
+
+            USB mode changes re-enumerate the device. If Windows temporarily loses Panel access, return to Steam mode with back-4 + A and reconnect the Puck.
+
+            ### Files included
+
+            - `OpenPuck-*-standard.*` — standard Puck firmware.
+            - `OpenPuck-*-factory-reset.*` — one-time factory-reset build; re-pair afterward.
+            - `ReversePuckFirmware-*.*` — ReversePuck controller-emulator firmware.
+            - `.uf2` files — drag-and-drop flashing through the BOOT/UF2 drive.
+            - `.hex` files — direct flashing workflows.
+            - `SHA256SUMS` — checksums for every published firmware asset.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -195,5 +213,9 @@ jobs:
           git -C "$MIRROR" config user.name "github-actions[bot]"
           git -C "$MIRROR" config user.email "github-actions[bot]@users.noreply.github.com"
           git -C "$MIRROR" add -A
-          git -C "$MIRROR" commit -m "mirror OpenPuck ${VERSION} uf2s for the panel updater"
-          git -C "$MIRROR" push origin firmware
+          if git -C "$MIRROR" diff --cached --quiet; then
+            echo "firmware mirror already contains OpenPuck ${VERSION}"
+          else
+            git -C "$MIRROR" commit -m "mirror OpenPuck ${VERSION} uf2s for the panel updater"
+            git -C "$MIRROR" push origin firmware
+          fi
