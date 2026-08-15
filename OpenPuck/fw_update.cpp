@@ -13,10 +13,6 @@
 #define FWUP_APP_BASE 0x26000UL
 #define FWUP_APP_END 0xED000UL
 #define FWUP_META 0xEC000UL
-// internal LittleFS (cfg.bin + bonds.bin) sits between the app region and the bootloader; wiped whole by the
-// full-board erase (config.cpp's factoryErase() only reformats it -- this leaves it raw-erased).
-#define FWUP_FS_BASE 0xED000UL
-#define FWUP_FS_END 0xF4000UL
 #define FWUP_BL_SETTINGS 0xFF000UL
 #define FWUP_PAGE 4096UL
 // Image cap. Also what makes the apply copy safe from self-overlap: dst ends at most at 0x26000+0x60000 =
@@ -30,9 +26,6 @@
 static const char FWUP_TAG[] = "OPK-FWUP-v1";
 
 #define FWUP_META_MAGIC 0x32465055UL // "UPF2"
-// Full-board-wipe arm marker, written to the meta page instead of a FwupMeta. Distinct magic + its bitwise
-// complement in the next word so neither an erased page (0xFFFFFFFF) nor a stray FwupMeta can spoof the arm.
-#define FWUP_WIPE_MAGIC 0x57495045UL // "WIPE"
 struct FwupMeta {
 	uint32_t magic, size, crc, staged;
 	uint32_t metaCrc; // CRC32 over the four fields above
@@ -209,17 +202,6 @@ void fwupAbort(void)
 	nvmcErasePage(FWUP_META);
 }
 
-// Arm a full-board wipe: erase the meta page and stamp the wipe marker (self-complementary pair). Runs at
-// RUNTIME on the meta page only -- the same NVMC path fwupBegin()/fwupChunk() already use during a live
-// transfer, never the app region we execute from. Any staged update is dropped (its bytes are about to be
-// erased anyway). The caller reboots; fwupWipeIfArmed() does the erase from RAM at the next boot.
-void fwupArmFullWipe(void)
-{
-	s_active = false;
-	uint32_t w[2] = { FWUP_WIPE_MAGIC, ~FWUP_WIPE_MAGIC };
-	nvmcErasePage(FWUP_META);
-	nvmcWriteWords(FWUP_META, w, 2);
-}
 
 // ---- boot-time apply ---------------------------------------------------------------------------------------
 // Runs entirely from RAM (.data section => copied out of flash by the startup code) with interrupts off: it
@@ -385,76 +367,4 @@ void fwupApplyIfArmed(void)
 	apply(FWUP_APP_BASE, v.staged, v.size, FWUP_META, FWUP_BL_SETTINGS);
 	for (;;) {
 	} // unreachable (ramApply resets)
-}
-
-// ---- full-board wipe (debug-only "erase everything") -------------------------------------------------------
-// Like ramApply, runs entirely from RAM with interrupts off -- it erases the very flash it would otherwise
-// execute from, so no calls/libc/flash constants, only registers + arguments + NVMC. It erases the ENTIRE app
-// region, the LittleFS config/bond region, and the bootloader settings page; the MBR, SoftDevice, and the
-// bootloader itself are left intact so the board still enumerates as the UF2 mass-storage drive. Afterwards no
-// valid app exists, so the Adafruit bootloader stays in UF2 mode on EVERY boot until firmware is flashed again.
-// Power-cut safe by the same ordering as ramApply: the app vector page is erased FIRST, so the board reads
-// app-less from that instant on -- an interrupted wipe still lands in the safe UF2-bootloader state.
-FWUP_RAMFUNC static void ramWipe(uint32_t appBase, uint32_t appEnd,
-				 uint32_t fsBase, uint32_t fsEnd,
-				 uint32_t blSettings)
-{
-	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een;
-	while (!NRF_NVMC->READY) {
-	}
-	// app vector page first (word 0 = the bootloader's app-validity marker)
-	NRF_WDT->RR[0] = WDT_RR_RR_Reload;
-	NRF_NVMC->ERASEPAGE = appBase;
-	while (!NRF_NVMC->READY) {
-	}
-	// rest of the app region (code, rodata, .data-init, staged-image scratch, the wipe marker itself)
-	for (uint32_t a = appBase + FWUP_PAGE; a < appEnd; a += FWUP_PAGE) {
-		NRF_WDT->RR[0] = WDT_RR_RR_Reload;
-		NRF_NVMC->ERASEPAGE = a;
-		while (!NRF_NVMC->READY) {
-		}
-	}
-	// LittleFS: cfg.bin (settings) + bonds.bin (pairings) -- no user data survives
-	for (uint32_t a = fsBase; a < fsEnd; a += FWUP_PAGE) {
-		NRF_WDT->RR[0] = WDT_RR_RR_Reload;
-		NRF_NVMC->ERASEPAGE = a;
-		while (!NRF_NVMC->READY) {
-		}
-	}
-	// bootloader settings: drop any "valid app" record so the boot check relies only on the (now erased)
-	// app vector -> UF2 mode every boot.
-	NRF_WDT->RR[0] = WDT_RR_RR_Reload;
-	NRF_NVMC->ERASEPAGE = blSettings;
-	while (!NRF_NVMC->READY) {
-	}
-	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren;
-	while (!NRF_NVMC->READY) {
-	}
-	// reset -- raw AIRCR write (keep NVIC_SystemReset's helpers out of the now-erased flash)
-	__asm volatile("dsb 0xF" ::: "memory");
-	*(volatile uint32_t *)0xE000ED0CUL = (0x5FAUL << 16) | (1UL << 2);
-	for (;;) {
-	}
-}
-
-void fwupWipeIfArmed(void)
-{
-    const volatile uint32_t *m = (const volatile uint32_t *)FWUP_META;
-
-    if (m[0] != FWUP_WIPE_MAGIC ||
-        m[1] != (uint32_t)~FWUP_WIPE_MAGIC)
-            return;
-
-    // SAFETY HARDENING:
-    //
-    // Older OpenPuck builds could leave a persistent full-board WIPE
-    // marker in FWUP_META.  A later application/UF2 flash does not
-    // necessarily touch this page, so honoring such a stale marker here
-    // could erase the newly flashed application, InternalFS, and the
-    // bootloader-settings page.
-    //
-    // Deliberately leave the marker untouched.  This makes detection
-    // completely read-only and preserves the marker for forensic inspection.
-    // Full-board wipe is disabled in this branch.
-    return;
 }
