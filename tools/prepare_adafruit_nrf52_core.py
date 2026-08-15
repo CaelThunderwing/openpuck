@@ -87,12 +87,22 @@ def prepare(header):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--header",
         type=Path,
         help="prepare this header instead of the installed pinned core",
     )
+    selection.add_argument(
+        "--print-data-dir",
+        action="store_true",
+        help="print the resolved Arduino data directory and exit",
+    )
     args = parser.parse_args()
+
+    if args.print_data_dir:
+        print(arduino_data_dir())
+        return
 
     header = (
         args.header.expanduser()

@@ -54,6 +54,7 @@ make build
 
 That's the whole command — the USB flags the firmware needs are baked in, so you don't pass them yourself. The build first runs `tools/prepare_adafruit_nrf52_core.py`, which makes one narrowly verified, idempotent change to Adafruit nRF52 core 1.7.0: it guards the core's EP0 default so OpenPuck's command-line value can take effect. Reinstalling the core restores its stock file.
 
+LittleFS assertions retain their source filename in flash. The Makefile therefore uses `-fmacro-prefix-map` to normalize the machine-specific Arduino data directory to the canonical path embedded in the hardware-audited image. This keeps local and GitHub release UF2/HEX payloads byte-identical without disabling assertions.
 
 - `CFG_TUD_HID=6` — Steam mode exposes four HID interfaces (the Adafruit nRF core defaults to 2); one extra for mouse and one for WebUSB brings the total to 6.
 - `CFG_TUD_ENDPOINT0_SIZE=8` — the Xbox 360-compatible control-endpoint size; the pinned-core preparation step ensures the override is honored.
@@ -73,7 +74,8 @@ make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 boa
 
 ```bash
 python3 tools/prepare_adafruit_nrf52_core.py
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_ENDPOINT0_SIZE=8 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb,--wrap=tud_descriptor_string_cb,--wrap=tud_descriptor_device_cb,--wrap=xTaskCreate" OpenPuck
+ARDUINO_DATA_DIR="$(python3 tools/prepare_adafruit_nrf52_core.py --print-data-dir)"
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_ENDPOINT0_SIZE=8 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256 -fmacro-prefix-map=$ARDUINO_DATA_DIR=/home/cael/.arduino15" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb,--wrap=tud_descriptor_string_cb,--wrap=tud_descriptor_device_cb,--wrap=xTaskCreate" OpenPuck
 ```
 
 ### 4a. Raytac MDBT50Q-CX-40
@@ -321,7 +323,7 @@ http://localhost:8008
 
 Stable releases use plain semantic-version tags such as `0.9.1`. Merge the validated release candidate into `main`, create the version tag on that exact commit, and push the tag manually. A user-pushed semantic-version tag triggers `.github/workflows/release.yml`, which builds and publishes the standard, factory-reset, and ReversePuck assets together with a verified `SHA256SUMS` manifest.
 
-The workflow pins Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16 to match the validated local build environment. Do not restore automatic tag creation with `GITHUB_TOKEN`: GitHub suppresses new workflow runs caused by ordinary events generated with that token.
+The workflow pins Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16 to match the validated local build environment. The Makefile also normalizes the Arduino data-directory prefix embedded by LittleFS assertions, preventing runner home-directory names from changing release payloads. Do not restore automatic tag creation with `GITHUB_TOKEN`: GitHub suppresses new workflow runs caused by ordinary events generated with that token.
 
 ## 10. Known operational details
 

@@ -32,6 +32,12 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
 PYTHON ?= $(shell command -v python3 || command -v python)
 NRF52_CORE_PREPARE := tools/prepare_adafruit_nrf52_core.py
+# LittleFS assertions embed __FILE__ in flash. Normalize the installed-core
+# prefix so local and CI release images are byte-identical. The canonical path
+# deliberately matches the path in the hardware-audited 0.9.1 image.
+ARDUINO_DATA_DIR = $(shell $(PYTHON) $(NRF52_CORE_PREPARE) --print-data-dir)
+CANONICAL_ARDUINO_DATA_DIR := /home/cael/.arduino15
+REPRODUCIBLE_MACRO_FLAGS = -fmacro-prefix-map=$(ARDUINO_DATA_DIR)=$(CANONICAL_ARDUINO_DATA_DIR)
 FQBN ?= adafruit:nrf52:feather52840
 CFG_TUD_HID ?= 6
 CFG_TUD_ENDPOINT0_SIZE ?= 8
@@ -53,7 +59,7 @@ EXTRA_FLAGS ?=
 # xTaskCreate is wrapped to give the core loop task durable Mode-11 and diagnostic headroom.
 OPENPUCK_LINK_FLAGS ?= -Wl,--wrap=tud_vendor_control_xfer_cb,--wrap=tud_descriptor_string_cb,--wrap=tud_descriptor_device_cb,--wrap=xTaskCreate
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
-USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_ENDPOINT0_SIZE=$(CFG_TUD_ENDPOINT0_SIZE) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
+USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_ENDPOINT0_SIZE=$(CFG_TUD_ENDPOINT0_SIZE) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(REPRODUCIBLE_MACRO_FLAGS) $(EXTRA_FLAGS)
 # When BUILD_PATH is set, --clean + path flags are injected; omitted for fast incremental dev builds.
 _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir $(OUTPUT_DIR))
 
@@ -69,7 +75,7 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 # ReversePuck (controller dongle, 28DE:1302) build flags. It has ONE HID interface (core default 2 is fine),
 # so it doesn't need CFG_TUD_HID; it DOES need the deeper vendor TX FIFO to hold the 0xAC paired-pucks list
 # whole, and the deeper usbd task queue keeps loop()-context WebUSB/CDC/HID sends off the watchdog path.
-RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
+RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(REPRODUCIBLE_MACRO_FLAGS) $(EXTRA_FLAGS)
 RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
 .PHONY: format format-check check prepare-nrf52-core build build-raytac package-raytac \
