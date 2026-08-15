@@ -43,7 +43,7 @@
 #define MODE_PS3 9
 // Microsoft Original Xbox Controller S (045E:0289)
 #define MODE_XBOX_OG 10
-// Microsoft Xbox 360 console test personality (XInput without PC mouse composite)
+// Microsoft Xbox 360 console personality with retail XSM3 authentication
 #define MODE_XBOX360_CONSOLE 11
 #define MODE_MAX 11
 

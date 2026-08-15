@@ -286,6 +286,8 @@ Note on the serial method: puck (Steam/Lizard) mode drops the CDC console by def
 
 WebUSB requires a secure context. `http://localhost` qualifies.
 
+This repository's local Panel includes the fork-specific Original Xbox (mode 10) and Xbox 360 Console (mode 11) selection buttons. The upstream hosted Panel at [safijari.github.io/openpuck](https://safijari.github.io/openpuck/) does not include those buttons, so use the local Panel when selecting either console mode.
+
 ### macOS / Linux
 
 ```bash

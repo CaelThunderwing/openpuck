@@ -2,7 +2,10 @@
 
 [![BuyMeACoffee](https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-yellow.svg)](https://github.com/safijari/openpuck/discussions/211)
 
-OpenPuck is an opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Original Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch, PS3, and Original Xbox modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Back 4 buttons are mappable for all emulated modes.
+OpenPuck is an opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Original Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch, PS3, Original Xbox, and Xbox 360 Console modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Xbox 360 Console mode has been tested in detail on both a stock Xbox 360 and an RGH-modified console with `UsbdSecPatch` removed, including cold boot, player-ring assignment, digital and analog inputs, stick clicks, and rumble. Back 4 buttons are mappable for all emulated modes.
+
+> [!IMPORTANT]
+> Original Xbox (mode 10) and Xbox 360 Console (mode 11) are fork-specific WebUSB Panel modes. The upstream hosted Panel at [safijari.github.io/openpuck](https://safijari.github.io/openpuck/) does not contain their mode-selection buttons. To select them, run this repository's WebUSB app locally by following [step 8 of the build and deployment guide](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally).
 
 > [!WARNING]
 > Every part of this project _HEAVILY_ used LLMs*
@@ -41,6 +44,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 9 | PS3 DualShock 3 / Sixaxis | Enumerates on a real PS3 (+ gyro/haptics) |
 | WebUSB panel → mode 10 | Original Xbox Controller S | Enumerates on a real Original Xbox |
+| WebUSB panel → mode 11 | Xbox 360 Console | Retail XSM3 authentication on stock and RGH Xbox 360 consoles; no `UsbdSecPatch` required |
 
 I'm also adding various QOL items as I go as well. For example having to hold the Steam button for like 6 seconds feels like an eternity. If Steam is open you can do Steam + Y for a shutdown. I'm adding Steam + Y for 2 seconds as a shutdown chort in ALL modes now.
 
@@ -70,7 +74,7 @@ If you want to use the second slot for OpenPuck, you'll need to first turn the c
 Switching slots requires turning the controller off (Steam + Y if steam is running, Steam + Y held for 2 seconds if Steam isn't running or if you're in a different mode, or just hold the Steam button for an eternity until the controller shuts off) and then you hold RB for slot 1 and LB for slot 2 while holding A and Steam to turn the controller back on.
 
 # Configuration
-A webusb based configuration UI is available [here](https://safijari.github.io/openpuck/). It allows Switching the mode manually and changing the back button mapping for other modes among other things. This will likely only work in Chrome and Edge and needs the pro micro to be connected via USB to the same computer for it to function. Note that it might not work in all modes on all machines but should always work in the Steam Controller mode (which you can revert to with back-4 + A). Note that in some modes the webusb connection might not work. If you're encountering that try going back to the Steam Controller mode and unplugging and replugging the dongle.
+The upstream [WebUSB configuration UI](https://safijari.github.io/openpuck/) supports the original project's modes, but it does not contain this fork's Original Xbox (mode 10) or Xbox 360 Console (mode 11) buttons. To select those modes, [run this repository's WebUSB app locally](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally). The Panel also allows manual mode switching, back-button mapping, and other configuration changes. It requires Chrome or Edge and a data-capable USB connection to the Pro Micro. WebUSB availability can vary by mode and host; Steam mode should remain accessible and can be restored with back-4 + A. If the Panel cannot detect the device after a mode change, return to Steam mode and unplug and reconnect the dongle.
 
 If you're running Linux and your browser still shows "disconnected" after selecting the OpenPuck in the device selector, it's probably a permissions issue. Check [this document](./docs/WEBUSB_LINUX.md) for more details.
 
