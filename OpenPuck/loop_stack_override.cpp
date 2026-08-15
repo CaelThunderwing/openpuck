@@ -3,6 +3,7 @@
 #include <string.h>
 
 static constexpr configSTACK_DEPTH_TYPE kLoopStackWords = 2048u;
+static constexpr configSTACK_DEPTH_TYPE kUsbdStackWords = 1024u;
 
 extern "C" BaseType_t __real_xTaskCreate(
     TaskFunction_t pxTaskCode,
@@ -26,6 +27,10 @@ extern "C" BaseType_t __wrap_xTaskCreate(
         strcmp(pcName, "loop") == 0 &&
         depth < kLoopStackWords) {
         depth = kLoopStackWords;
+    } else if (pcName != nullptr &&
+               strcmp(pcName, "usbd") == 0 &&
+               depth < kUsbdStackWords) {
+        depth = kUsbdStackWords;
     }
 
     return __real_xTaskCreate(

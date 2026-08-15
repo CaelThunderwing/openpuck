@@ -21,31 +21,12 @@ Adafruit_USBD_WebUSB usb_web;
 // MODE_XBOX360_CONSOLE XSM3 vendor/interface bridge.
 bool xbox360ConsoleXsm3ControlXfer(uint8_t rhport, uint8_t stage,
                                    tusb_control_request_t const *request);
-// Staged XSM3 gate for isolating the Xbox-only crash.
-// Change X360_XSM3_MAX_REQUEST between builds:
-//   0x81 = identification only
-//   0x82 = allow identification + challenge-init
-//   0x86 = also allow state query
-//   0x83 = allow through challenge-response
-//
-// Note: request order is not numeric, so the allow-list below is explicit.
-#ifndef X360_XSM3_MAX_REQUEST
-#define X360_XSM3_MAX_REQUEST 0x86
-#endif
-
-static inline bool x360Xsm3RequestAllowed(uint8_t req)
+// Requests used by the retail Xbox 360 XSM3 handshake. Request 0x85 is not
+// part of the protocol implemented by libxsm3 and remains unsupported.
+static inline bool x360Xsm3RequestSupported(uint8_t req)
 {
-#if X360_XSM3_MAX_REQUEST == 0x81
-        return req == 0x81;
-#elif X360_XSM3_MAX_REQUEST == 0x82
-        return req == 0x81 || req == 0x82;
-#elif X360_XSM3_MAX_REQUEST == 0x86
-        return req == 0x81 || req == 0x82 || req == 0x86;
-#elif X360_XSM3_MAX_REQUEST == 0x83
-        return req == 0x81 || req == 0x82 || req == 0x86 || req == 0x83;
-#else
-#error Unsupported X360_XSM3_MAX_REQUEST value
-#endif
+        return req == 0x81 || req == 0x82 || req == 0x83 ||
+               req == 0x84 || req == 0x86 || req == 0x87;
 }
 
 
@@ -71,7 +52,7 @@ __wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
             (uint8_t)request->wIndex == 3 &&
             request->bRequest >= 0x81 &&
             request->bRequest <= 0x87) {
-                if (!x360Xsm3RequestAllowed(request->bRequest))
+                if (!x360Xsm3RequestSupported(request->bRequest))
                         return false;
                 return xbox360ConsoleXsm3ControlXfer(rhport, stage, request);
         }
@@ -390,7 +371,7 @@ static void webusbSendBlob()
 	p[138] = (uint8_t)(hlr >> 8);
 	p[139] = (uint8_t)(hlr >> 16);
 	p[140] = (uint8_t)(hlr >> 24);
-	// least-ever free stack (words) on the usbd task (800B total) and loop task -- usbd trending to 0 confirms
+	// least-ever free stack (words) on the usbd task (4096B target) and loop task -- usbd trending to 0 confirms
 	// the overflow. words, not bytes.
 	uint16_t usbdFree = faultDiagUsbdStackFree(),
 		 loopFree = faultDiagLoopStackFree();

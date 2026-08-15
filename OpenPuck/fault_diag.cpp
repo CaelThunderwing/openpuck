@@ -1727,7 +1727,7 @@ uint16_t clockUsPerMs()
 
 // ---- per-task stack headroom (usbd-overflow hypothesis check) ---------------------------------------------
 // uxTaskGetSystemState (configUSE_TRACE_FACILITY=1) reports each task's stack high-water mark = the LEAST free
-// stack it ever had, in words. The "usbd" task (200 words / 800 B, core-fixed) runs handleSet->relayEnqueue;
+// stack it ever had, in words. The repo xTaskCreate wrapper raises the "usbd" task to 1024 words / 4096 B;
 // if this trends toward 0 under haptic load, the stack overflow is confirmed. Repo-scoped, read-only, no core
 // changes -- just observing FreeRTOS.
 static uint16_t g_usbdStackMin = 0xFFFF;
