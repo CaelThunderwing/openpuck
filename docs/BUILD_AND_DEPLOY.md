@@ -321,7 +321,7 @@ http://localhost:8008
 
 ## 9. Publish a release
 
-Stable releases use plain semantic-version tags such as `0.9.1`. Merge the validated release candidate into `main`, create the version tag on that exact commit, and push the tag manually. A user-pushed semantic-version tag triggers `.github/workflows/release.yml`, which builds and publishes the standard, factory-reset, and ReversePuck assets together with a verified `SHA256SUMS` manifest.
+Stable releases use plain semantic-version tags such as `0.9.1`. Merge the validated release candidate into `main`, create the version tag on that exact commit, and push the tag manually. A user-pushed semantic-version tag triggers `.github/workflows/release.yml`, which builds and publishes the standard, factory-reset, and ReversePuck assets together with a verified `SHA256SUMS` manifest. The firmware-branch capability manifest is generated from decoded UF2 payload blocks, so tags split across UF2 container boundaries are still detected correctly.
 
 The workflow pins Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16 to match the validated local build environment. The Makefile also normalizes the Arduino data-directory prefix embedded by LittleFS assertions, preventing runner home-directory names from changing release payloads. Do not restore automatic tag creation with `GITHUB_TOKEN`: GitHub suppresses new workflow runs caused by ordinary events generated with that token.
 
