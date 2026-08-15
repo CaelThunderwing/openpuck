@@ -1,6 +1,6 @@
 {
  "OpenPuck-0.9.1-factory-reset.uf2": {
-  "panelUpdate": false
+  "panelUpdate": true
  },
  "OpenPuck-0.9.1-standard.uf2": {
   "panelUpdate": true
