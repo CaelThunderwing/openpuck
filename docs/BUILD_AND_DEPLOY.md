@@ -331,3 +331,4 @@ The workflow pins Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrf
 - The board re-enumerates on USB mode switches.
 - Poll interval tuning in the WebUSB app is session-only by design.
 - Bonds persist in the board's internal filesystem.
+- In Xbox 360 Console mode, briefly press and release Steam to power on the console after the puck has completed at least one powered-on USB session and remained connected through shutdown. A puck first plugged into an already fully powered-off console cannot wake it because there is no established USB session to resume.

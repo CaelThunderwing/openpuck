@@ -2,7 +2,7 @@
 
 [![BuyMeACoffee](https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-yellow.svg)](https://github.com/safijari/openpuck/discussions/211)
 
-OpenPuck is an opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Original Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch, PS3, Original Xbox, and Xbox 360 Console modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Xbox 360 Console mode has been tested in detail on both a stock Xbox 360 and an RGH-modified console with `UsbdSecPatch` removed, including cold boot, player-ring assignment, digital and analog inputs, stick clicks, and rumble. Back 4 buttons are mappable for all emulated modes.
+OpenPuck is an opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Original Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch, PS3, Original Xbox, and Xbox 360 Console modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Xbox 360 Console mode has been tested in detail on both a stock Xbox 360 and an RGH-modified console with `UsbdSecPatch` removed, including cold boot, player-ring assignment, digital and analog inputs, stick clicks, and rumble. In Xbox 360 Console mode, briefly pressing and releasing Steam can power on a stock or RGH console after the puck has completed at least one powered-on USB session and remains connected during shutdown. A puck first connected after the console is already fully powered off cannot wake it. Back 4 buttons are mappable for all emulated modes.
 
 > [!IMPORTANT]
 > Original Xbox (mode 10) and Xbox 360 Console (mode 11) are fork-specific WebUSB Panel modes. The upstream hosted Panel at [safijari.github.io/openpuck](https://safijari.github.io/openpuck/) does not contain their mode-selection buttons. To select them, run this repository's WebUSB app locally by following [step 8 of the build and deployment guide](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally).
@@ -44,7 +44,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 9 | PS3 DualShock 3 / Sixaxis | Enumerates on a real PS3 (+ gyro/haptics) |
 | WebUSB panel → mode 10 | Original Xbox Controller S | Enumerates on a real Original Xbox |
-| WebUSB panel → mode 11 | Xbox 360 Console | Retail XSM3 authentication on stock and RGH Xbox 360 consoles; no `UsbdSecPatch` required |
+| WebUSB panel → mode 11 | Xbox 360 Console | Retail XSM3 authentication on stock and RGH Xbox 360 consoles; no `UsbdSecPatch` required; Steam-button power-on after a prior USB session |
 
 I'm also adding various QOL items as I go as well. For example having to hold the Steam button for like 6 seconds feels like an eternity. If Steam is open you can do Steam + Y for a shutdown. I'm adding Steam + Y for 2 seconds as a shutdown chort in ALL modes now.
 

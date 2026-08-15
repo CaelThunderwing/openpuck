@@ -153,6 +153,7 @@ jobs:
             - Xbox 360 Console mode (mode 11) with full retail XSM3 authentication.
             - Mode 11 validated on stock and RGH Xbox 360 consoles without `UsbdSecPatch`.
             - Hotplug, cold boot, player-ring assignment, digital inputs, analog sticks, stick clicks, rumble, and sustained gameplay validated.
+            - Mode 11 Steam-button power-on validated on stock and RGH consoles when the puck remains connected after an active USB session. First plugging the puck into an already fully powered-off console cannot wake it.
             - Persistent HardFault, watchdog, boot-history, and USB diagnostics.
             - Release build pinned to Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16.
 

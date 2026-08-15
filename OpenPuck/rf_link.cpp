@@ -10,6 +10,7 @@
 #include "fault_diag.h"
 #include "usb_mount.h" // modeSwitchReboot()
 #include <Adafruit_TinyUSB.h>
+#include "device/dcd.h"
 #include <Arduino.h>
 #include <string.h>
 
@@ -483,9 +484,16 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									    1000u &&
 								    USBDevice
 									    .suspended()) {
-									USBDevice
-										.remoteWakeup();
-									ledWakePulse();
+									bool wakeDriven = USBDevice.remoteWakeup();
+									if (!wakeDriven &&
+									    g_usbMode == MODE_XBOX360_CONSOLE) {
+										// The powered-off Xbox leaves USB suspended without arming
+										// standard remote wake. Drive the same Nordic resume path directly.
+										dcd_remote_wakeup(0);
+										wakeDriven = true;
+									}
+									if (wakeDriven)
+										ledWakePulse();
 									if (g_active)
 										g_active->wakeEvent();
 								}
