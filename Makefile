@@ -20,7 +20,9 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # The OpenPuck firmware needs two TinyUSB config values that differ from the Adafruit nRF52 core defaults:
 #   CFG_TUD_HID=6            -- four HID interfaces (Steam mode exposes four puck slots) plus one for mouse 
 #								and one for WebUSB; core default is 2.
-#   CFG_TUD_TASK_QUEUE_SZ=64 -- deeper usbd event queue; the default 16 deadlocks the loop task under comms
+#   CFG_TUD_ENDPOINT0_SIZE=8 -- required Xbox 360 control-endpoint size. The preparation target adds a
+#                               guard to the pinned core so this command-line override is honored.
+#   CFG_TUD_TASK_QUEUE_SZ=512 -- deeper usbd event queue; the default 16 deadlocks the loop task under comms
 #                               load -> watchdog reset (see OpenPuck.ino + docs/BUILD_AND_DEPLOY.md).
 #   CFG_TUD_VENDOR_TX_BUFSIZE=256 -- the WebUSB status blob is ~118 B; the core default 64 can't hold it whole,
 #                               so the panel send (which drops rather than blocks when the FIFO is full) could
@@ -28,6 +30,8 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # They're baked in here so a normal build is just `make build` -- no need to remember the flags. Override any
 # on the command line, e.g.   make build CFG_TUD_HID=8 CFG_TUD_TASK_QUEUE_SZ=128
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
+PYTHON ?= $(shell command -v python3 || command -v python)
+NRF52_CORE_PREPARE := tools/prepare_adafruit_nrf52_core.py
 FQBN ?= adafruit:nrf52:feather52840
 CFG_TUD_HID ?= 6
 CFG_TUD_ENDPOINT0_SIZE ?= 8
@@ -57,7 +61,7 @@ _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
 # the bottom swallows it so make doesn't try to build the port path as a target.
-FLASH_PORT := $(filter-out format format-check check build build-raytac \
+FLASH_PORT := $(filter-out format format-check check prepare-nrf52-core build build-raytac \
 	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
 	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
@@ -68,20 +72,25 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
-.PHONY: format format-check check build build-raytac package-raytac \
+.PHONY: format format-check check prepare-nrf52-core build build-raytac package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
 	reversepuck reversepuck-flash reversepuck-deploy flash deploy
 
+## Prepare the exact pinned core so CFG_TUD_ENDPOINT0_SIZE can be overridden from the command line.
+## The script is idempotent and refuses to touch an unexpected core version or file layout.
+prepare-nrf52-core:
+	$(PYTHON) $(NRF52_CORE_PREPARE)
+
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
-build:
+build: prepare-nrf52-core
 	arduino-cli compile -b $(FQBN) $(_PATH_FLAGS) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" --build-property "compiler.c.elf.extra_flags=$(OPENPUCK_LINK_FLAGS)" OpenPuck
 
 ## Build for the Raytac MDBT50Q-CX-40 without replacing its Open DFU bootloader.
 ## Like `build`, this does NOT run gen_version.sh -- run it yourself first if you want version provenance
 ## baked in. (It must not run here: CI generates git_version.h once with OPK_BUILD_VERSION set, and a
 ## regeneration mid-workflow would strip the release version out of every build that follows.)
-build-raytac:
+build-raytac: prepare-nrf52-core
 	mkdir -p build/raytac build/cache/raytac
 	arduino-cli compile --clean -b adafruit:nrf52:mdbt50qrx \
 		--build-path build/cache/raytac \

@@ -38,10 +38,10 @@ Use [choco](https://chocolatey.org/) and do a `choco install arduino-cli`. If yo
 Run once on any platform:
 
 ```bash
-pip install adafruit-nrfutil         # DFU packaging helper (required by the Adafruit nRF52 build recipe)
+pip install 'adafruit-nrfutil==0.5.3.post16'  # required by the Adafruit nRF52 build recipe
 arduino-cli config init
 arduino-cli core update-index
-arduino-cli core install adafruit:nrf52 --additional-urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+arduino-cli core install adafruit:nrf52@1.7.0 --additional-urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
 ```
 
 ## 4. Build the firmware
@@ -52,9 +52,11 @@ From the repository root:
 make build
 ```
 
-That's the whole command — the USB flags the firmware needs are baked in, so you don't pass them yourself:
+That's the whole command — the USB flags the firmware needs are baked in, so you don't pass them yourself. The build first runs `tools/prepare_adafruit_nrf52_core.py`, which makes one narrowly verified, idempotent change to Adafruit nRF52 core 1.7.0: it guards the core's EP0 default so OpenPuck's command-line value can take effect. Reinstalling the core restores its stock file.
+
 
 - `CFG_TUD_HID=6` — Steam mode exposes four HID interfaces (the Adafruit nRF core defaults to 2); one extra for mouse and one for WebUSB brings the total to 6.
+- `CFG_TUD_ENDPOINT0_SIZE=8` — the Xbox 360-compatible control-endpoint size; the pinned-core preparation step ensures the override is honored.
 - `CFG_TUD_TASK_QUEUE_SZ=512` — a deeper TinyUSB device event queue; the default of 16 can deadlock the firmware's loop under heavy USB traffic and trip the watchdog.
 - `CFG_TUD_VENDOR_TX_BUFSIZE=256` — the WebUSB status blob (~118 B) must fit the vendor TX FIFO in one write; the default 64 is too small and the panel (which drops frames rather than block the loop) would send nothing — a blank dashboard.
 
@@ -70,7 +72,8 @@ make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 boa
 `#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb" OpenPuck
+python3 tools/prepare_adafruit_nrf52_core.py
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_ENDPOINT0_SIZE=8 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb,--wrap=tud_descriptor_string_cb,--wrap=tud_descriptor_device_cb,--wrap=xTaskCreate" OpenPuck
 ```
 
 ### 4a. Raytac MDBT50Q-CX-40
