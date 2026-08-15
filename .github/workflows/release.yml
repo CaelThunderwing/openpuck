@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - '[0-9]*.[0-9]*.[0-9]*'
   release:
@@ -14,49 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  bump-version-tag:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Tag next patch version
-        run: |
-          set -eu
-          git fetch --force --tags origin
-          SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-
-          if git tag --points-at "$GITHUB_SHA" | grep -Eq "$SEMVER_RE"; then
-            echo "semver tag already exists on this commit; skipping bump"
-            echo "Tag already present on ${GITHUB_SHA}; release build runs from the tag event." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          LAST="$(
-            git tag --list \
-              | grep -E "$SEMVER_RE" \
-              | sort -V \
-              | tail -n1 || true
-          )"
-
-          if [ -z "$LAST" ]; then
-            # Seed semver history at the requested public baseline.
-            NEXT="0.9.1"
-          else
-            MAJOR="${LAST%%.*}"
-            REST="${LAST#*.}"
-            MINOR="${REST%%.*}"
-            PATCH="${LAST##*.}"
-            NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          fi
-
-          git tag "$NEXT" "$GITHUB_SHA"
-          git push origin "$NEXT"
-
   build-release:
     if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
@@ -86,6 +41,8 @@ jobs:
 
       - name: Set up Arduino CLI
         uses: arduino/setup-arduino-cli@v2
+        with:
+          version: '1.5.1'
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -100,7 +57,14 @@ jobs:
           arduino-cli config init --overwrite
           arduino-cli config set board_manager.additional_urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
           arduino-cli core update-index
-          arduino-cli core install adafruit:nrf52
+          arduino-cli core install adafruit:nrf52@1.7.0
+
+      - name: Verify pinned build toolchain
+        run: |
+          arduino-cli version
+          arduino-cli version | grep -F 'Version: 1.5.1'
+          arduino-cli core list
+          arduino-cli core list | awk '$1 == "adafruit:nrf52" && $2 == "1.7.0" { found=1 } END { exit !found }'
 
       - name: Generate version header
         env:
