@@ -49,6 +49,9 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Install pinned adafruit-nrfutil
+        run: python -m pip install 'adafruit-nrfutil==0.5.3.post16'
+
       - name: Install Adafruit nRF52 core
         run: |
           arduino-cli config init --overwrite
@@ -62,6 +65,8 @@ jobs:
           arduino-cli version | grep -F 'Version: 1.5.1'
           arduino-cli core list
           arduino-cli core list | awk '$1 == "adafruit:nrf52" && $2 == "1.7.0" { found=1 } END { exit !found }'
+          adafruit-nrfutil version
+          adafruit-nrfutil version | grep -F '0.5.3.post16'
 
       - name: Generate version header
         env:
@@ -149,7 +154,7 @@ jobs:
             - Mode 11 validated on stock and RGH Xbox 360 consoles without `UsbdSecPatch`.
             - Hotplug, cold boot, player-ring assignment, digital inputs, analog sticks, stick clicks, rumble, and sustained gameplay validated.
             - Persistent HardFault, watchdog, boot-history, and USB diagnostics.
-            - Release build pinned to Arduino CLI 1.5.1 and Adafruit nRF52 core 1.7.0.
+            - Release build pinned to Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16.
 
             ### WebUSB Panel
 

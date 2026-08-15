@@ -318,7 +318,7 @@ http://localhost:8008
 
 Stable releases use plain semantic-version tags such as `0.9.1`. Merge the validated release candidate into `main`, create the version tag on that exact commit, and push the tag manually. A user-pushed semantic-version tag triggers `.github/workflows/release.yml`, which builds and publishes the standard, factory-reset, and ReversePuck assets together with a verified `SHA256SUMS` manifest.
 
-The workflow pins Arduino CLI 1.5.1 and Adafruit nRF52 core 1.7.0 to match the validated local build environment. Do not restore automatic tag creation with `GITHUB_TOKEN`: GitHub suppresses new workflow runs caused by ordinary events generated with that token.
+The workflow pins Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16 to match the validated local build environment. Do not restore automatic tag creation with `GITHUB_TOKEN`: GitHub suppresses new workflow runs caused by ordinary events generated with that token.
 
 ## 10. Known operational details
 
