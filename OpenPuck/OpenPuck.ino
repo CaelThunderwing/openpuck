@@ -67,9 +67,9 @@ using namespace Adafruit_LittleFS_Namespace;
 static uint8_t g_usbCfgDesc[512];
 
 // Per-mode USB serial suffix (modes 1..MODE_MAX: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game
-// D=ds4game 3=ps3 O=original-xbox C=xbox360-console J=dinput I=sinput).
+// D=ds4game 3=ps3 O=original-xbox J=dinput I=sinput C=xbox360-console).
 static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S', 'G',
-				    'Q', 'D', '3', 'O', 'C', 'J', 'I' };
+				    'Q', 'D', '3', 'O', 'J', 'I', 'C' };
 // Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
 static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 
@@ -292,8 +292,8 @@ void setup()
 		"SWITCH(pro+gyro)",     "PS5(dualsense)",
 		"HIDGYRO(ds4+motion)",  "PS5(dualsense,game/clean)",
 		"DS4(ds4,game/clean)",  "PS3(dualshock3/sixaxis)",
-		"XBOX-OG(controller s)", "XBOX360(console clean)",
-		"DINPUT(joystick+motion)", "SINPUT(sdl-native)"
+		"XBOX-OG(controller s)", "DINPUT(joystick+motion)",
+		"SINPUT(sdl-native)", "XBOX360(console clean)"
 	};
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,
 		      g_board,

@@ -8,7 +8,10 @@ the Work done to support Xbox 360 Controller support was largely born as i wishe
 OpenPuck is an opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Original Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch, PS3, Original Xbox, and Xbox 360 Console modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Xbox 360 Console mode has been tested in detail on both a stock Xbox 360 and an RGH-modified console with `UsbdSecPatch` removed, including cold boot, player-ring assignment, digital and analog inputs, stick clicks, and rumble. In Xbox 360 Console mode, briefly pressing and releasing Steam can power on a stock or RGH console after the puck has completed at least one powered-on USB session and remains connected during shutdown. A puck first connected after the console is already fully powered off cannot wake it. Back 4 buttons are mappable for all emulated modes.
 
 > [!IMPORTANT]
-> Original Xbox (mode 10) and Xbox 360 Console (mode 11) are fork-specific WebUSB Panel modes. The upstream hosted Panel at [safijari.github.io/openpuck](https://safijari.github.io/openpuck/) does not contain their mode-selection buttons. To select them, run this repository's WebUSB app locally by following [step 8 of the build and deployment guide](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally).
+> Original Xbox (mode 10) and Xbox 360 Console (mode 13) are fork-specific WebUSB Panel modes. The upstream hosted Panel at [safijari.github.io/openpuck](https://safijari.github.io/openpuck/) does not contain their mode-selection buttons. To select them, run this repository's WebUSB app locally by following [step 8 of the build and deployment guide](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally).
+
+> [!IMPORTANT]
+> This mode layout matches current upstream OpenPuck: DirectInput is mode 11, SInput is mode 12, and Xbox 360 Console is mode 13. If updating from a fork build that used Xbox 360 Console as mode 11, reselect the desired USB mode after updating; a factory reset and re-pair is optional, never automatic.
 
 > [!WARNING]
 > Every part of this project _HEAVILY_ used LLMs*
@@ -47,9 +50,9 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 9 | PS3 DualShock 3 / Sixaxis | Enumerates on a real PS3 (+ gyro/haptics) |
 | WebUSB panel → mode 10 | Original Xbox Controller S | Enumerates on a real Original Xbox |
-| WebUSB panel → mode 11 | Xbox 360 Console | Retail XSM3 authentication on stock and RGH Xbox 360 consoles; no `UsbdSecPatch` required; Steam-button power-on after a prior USB session |
-| WebUSB panel → mode 12 | DirectInput (flight/space sims) | Every axis at once, as two DirectInput joysticks |
-| WebUSB panel → mode 13 | SInput (SDL-native) | Sticks + analog triggers + gyro + both trackpads + battery |
+| WebUSB panel → mode 11 | DirectInput (flight/space sims) | Every axis at once, as two DirectInput joysticks |
+| WebUSB panel → mode 12 | SInput (SDL-native) | Sticks + analog triggers + gyro + both trackpads + battery |
+| WebUSB panel → mode 13 | Xbox 360 Console | Retail XSM3 authentication on stock and RGH Xbox 360 consoles; no `UsbdSecPatch` required; Steam-button power-on after a prior USB session |
 
 **DirectInput mode** exists because Steam Input funnels everything through XInput, so only a handful of the
 controller's analog inputs can be live at once — a problem for flight and space sims, which bind axes through
@@ -104,7 +107,7 @@ If you want to use the second slot for OpenPuck, you'll need to first turn the c
 Switching slots requires turning the controller off (Steam + Y if steam is running, Steam + Y held for 2 seconds if Steam isn't running or if you're in a different mode, or just hold the Steam button for an eternity until the controller shuts off) and then you hold RB for slot 1 and LB for slot 2 while holding A and Steam to turn the controller back on.
 
 # Configuration
-The upstream [WebUSB configuration UI](https://safijari.github.io/openpuck/) supports the original project's modes, but it does not contain this fork's Original Xbox (mode 10) or Xbox 360 Console (mode 11) buttons. To select those modes, [run this repository's WebUSB app locally](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally). The Panel also allows manual mode switching, back-button mapping, and other configuration changes. It requires Chrome or Edge and a data-capable USB connection to the Pro Micro. WebUSB availability can vary by mode and host; Steam mode should remain accessible and can be restored with back-4 + A. If the Panel cannot detect the device after a mode change, return to Steam mode and unplug and reconnect the dongle.
+The upstream [WebUSB configuration UI](https://safijari.github.io/openpuck/) supports the original project's modes, but it does not contain this fork's Original Xbox (mode 10) or Xbox 360 Console (mode 13) buttons. To select those modes, [run this repository's WebUSB app locally](./docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally). The Panel also allows manual mode switching, back-button mapping, and other configuration changes. It requires Chrome or Edge and a data-capable USB connection to the Pro Micro. WebUSB availability can vary by mode and host; Steam mode should remain accessible and can be restored with back-4 + A. If the Panel cannot detect the device after a mode change, return to Steam mode and unplug and reconnect the dongle.
 
 If you're running Linux and your browser still shows "disconnected" after selecting the OpenPuck in the device selector, it's probably a permissions issue. Check [this document](./docs/WEBUSB_LINUX.md) for more details.
 

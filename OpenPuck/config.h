@@ -52,15 +52,15 @@
 #define MODE_PS3 9
 // Microsoft Original Xbox Controller S (045E:0289)
 #define MODE_XBOX_OG 10
-// Microsoft Xbox 360 console personality with retail XSM3 authentication. This is a persisted/exported
-// fork-specific mode ID, so it stays at 11 for compatibility with existing configurations.
-#define MODE_XBOX360_CONSOLE 11
 // Generic DirectInput joystick -- presents EVERY analog input at once (sticks, triggers, both trackpads, gyro)
 // as two DirectInput devices, for flight/space sims that bind axes through DirectInput rather than XInput.
-#define MODE_DINPUT 12
+#define MODE_DINPUT 11
 // SInput: the open SDL-native gamepad protocol (docs.handheldlegend.com/s/sinput). Sticks + analog triggers +
 // gyro/accel + BOTH trackpads + battery, all bound natively by SDL3 / Steam Input with no impersonation.
-#define MODE_SINPUT 13
+#define MODE_SINPUT 12
+// Microsoft Xbox 360 console personality with retail XSM3 authentication. IDs 1..12 match current upstream
+// OpenPuck mode assignments; this fork-specific personality occupies the next free persisted/exported ID.
+#define MODE_XBOX360_CONSOLE 13
 #define MODE_MAX 13
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
