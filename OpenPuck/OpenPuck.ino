@@ -37,6 +37,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "serial_console.h"
 #include "wake_hid.h"
 #include "status_led.h"
+#include "pwr_switch.h"
 #include "usb_mount.h"
 #include "identity.h"
 #include "fault_diag.h"
@@ -66,9 +67,9 @@ using namespace Adafruit_LittleFS_Namespace;
 static uint8_t g_usbCfgDesc[512];
 
 // Per-mode USB serial suffix (modes 1..MODE_MAX: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game
-// D=ds4game 3=ps3 O=original-xbox).
-static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S',
-				    'G', 'Q', 'D', '3', 'O' };
+// D=ds4game 3=ps3 O=original-xbox C=xbox360-console J=dinput I=sinput).
+static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S', 'G',
+				    'Q', 'D', '3', 'O', 'C', 'J', 'I' };
 // Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
 static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 
@@ -144,6 +145,9 @@ void setup()
 #endif
 	genSerial();
 	ledInit();
+#if OPK_PWR_SWITCH
+	pwrSwitchInit();
+#endif
 
 	// seed defaults so unbonded slots don't share the discovery address
 	for (int s = 0; s < NSLOT; s++)
@@ -283,13 +287,13 @@ void setup()
 	webusbInit(); // also drain the WebUSB status blob from the usbd task (its flush() can block loop() too)
 	hapticInit();
 	static const char *MODE_NAME[] = {
-		"STEAM(puck)",		"XBOX(xinput+mouse)",
-		"SWITCH(horipad)",	"LIZARD(puck kb/mouse)",
-		"SWITCH(pro+gyro)",	"PS5(dualsense)",
-		"HIDGYRO(ds4+motion)",	"PS5(dualsense,game/clean)",
-		"DS4(ds4,game/clean)",	"PS3(dualshock3/sixaxis)",
-		"XBOX-OG(controller s)",
-		"XBOX360(console clean)"
+		"STEAM(puck)",          "XBOX(xinput+mouse)",
+		"SWITCH(horipad)",      "LIZARD(puck kb/mouse)",
+		"SWITCH(pro+gyro)",     "PS5(dualsense)",
+		"HIDGYRO(ds4+motion)",  "PS5(dualsense,game/clean)",
+		"DS4(ds4,game/clean)",  "PS3(dualshock3/sixaxis)",
+		"XBOX-OG(controller s)", "XBOX360(console clean)",
+		"DINPUT(joystick+motion)", "SINPUT(sdl-native)"
 	};
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,
 		      g_board,
@@ -594,6 +598,9 @@ void loop()
 	faultDiagSetStage(6);
 	ledTask();
 	acc[6] += (uint32_t)(micros() - t);
+#if OPK_PWR_SWITCH
+	pwrSwitchTask();
+#endif
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	faultDiagSetStage(8);
@@ -634,6 +641,9 @@ void loop()
 	hapticTask();
 	faultDiagSetStage(6);
 	ledTask();
+#if OPK_PWR_SWITCH
+	pwrSwitchTask();
+#endif
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	faultDiagSetStage(8);

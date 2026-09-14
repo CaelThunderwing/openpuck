@@ -134,45 +134,36 @@ jobs:
           )
           ls -la release_assets
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ steps.release_version.outputs.version }}
-          name: ${{ format('OpenPuck {0}', steps.release_version.outputs.version) }}
-          prerelease: false
-          files: release_assets/*
-          body: |
-            OpenPuck Firmware Release
-
-            Version: ${{ steps.release_version.outputs.version }}
-            Commit: ${{ github.sha }}
-
-            ### Highlights
-
-            - Original Xbox Controller S console mode (mode 10).
-            - Xbox 360 Console mode (mode 11) with full retail XSM3 authentication.
-            - Mode 11 validated on stock and RGH Xbox 360 consoles without `UsbdSecPatch`.
-            - Hotplug, cold boot, player-ring assignment, digital inputs, analog sticks, stick clicks, rumble, and sustained gameplay validated.
-            - Mode 11 Steam-button power-on validated on stock and RGH consoles when the puck remains connected after an active USB session. First plugging the puck into an already fully powered-off console cannot wake it.
-            - Persistent HardFault, watchdog, boot-history, and USB diagnostics.
-            - Release build pinned to Arduino CLI 1.5.1, Adafruit nRF52 core 1.7.0, and adafruit-nrfutil 0.5.3.post16.
-
-            ### WebUSB Panel
-
-            The upstream hosted Panel does not contain this fork's mode 10 and mode 11 buttons. Follow the [local WebUSB instructions](https://github.com/${{ github.repository }}/blob/${{ steps.release_version.outputs.version }}/docs/BUILD_AND_DEPLOY.md#8-run-the-webusb-app-locally) to use this repository's Panel.
-
-            USB mode changes re-enumerate the device. If Windows temporarily loses Panel access, return to Steam mode with back-4 + A and reconnect the Puck.
-
-            ### Files included
-
-            - `OpenPuck-*-standard.*` — standard Puck firmware.
-            - `OpenPuck-*-factory-reset.*` — one-time factory-reset build; re-pair afterward.
-            - `ReversePuckFirmware-*.*` — ReversePuck controller-emulator firmware.
-            - `.uf2` files — drag-and-drop flashing through the BOOT/UF2 drive.
-            - `.hex` files — direct flashing workflows.
-            - `SHA256SUMS` — checksums for every published firmware asset.
+      - name: Publish artifacts to the GitHub Release
+        # NEVER rewrite an existing release's notes, title or pre-release flag. This job also runs on
+        # `release: published`, i.e. right after a human wrote release notes in the UI (or marked the
+        # release as a pre-release) -- rewriting the release here would throw that away. So: upload the
+        # assets onto an existing release, and only author a default title/body when we are the ones
+        # creating the release (a bare semver tag push, no release object yet).
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release_version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "release $VERSION already exists; uploading assets only (notes/title/pre-release preserved)"
+            gh release upload "$VERSION" release_assets/* --clobber
+          else
+            gh release create "$VERSION" release_assets/* \
+              --title "OpenPuck $VERSION" \
+              --notes "OpenPuck Firmware Release
+
+          Version: ${VERSION}
+          Commit: ${GITHUB_SHA}
+
+          ### Files included:
+
+          - \`OpenPuck-*-standard.*\` — puck firmware (standard)
+          - \`OpenPuck-*-factory-reset.*\` — puck firmware (factory reset)
+          - \`ReversePuckFirmware-*.*\` — reverse-puck firmware (controller emulator)
+          - \`.uf2\` files for drag-and-drop flashing (BOOT/UF2 drive)
+          - \`.hex\` files for direct flashing workflows"
+          fi
 
       - name: Mirror OpenPuck UF2s to the firmware branch
         # The WebUSB panel's "update from a release" flow downloads these in-browser. GitHub's release-asset
